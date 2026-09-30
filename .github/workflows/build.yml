@@ -1,0 +1,27 @@
+name: Build
+on:
+  push:
+    branches:
+    - '**'
+  pull_request:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Set up D compiler
+        uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-1.43.0
+      - name: Run unit tests
+        run: dub test --compiler=ldc2
+      - name: Compile release version
+        run: dub build --compiler=ldc2 --build=release
+      - name: Upload build
+        uses: actions/upload-artifact@v7
+        with:
+          name: reneo
+          path: |
+            reneo.exe
+            cairo.dll

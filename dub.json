@@ -1,16 +1,27 @@
 {
-	"authors": [
-		"Rojetto",
+    "authors": [
+        "Rojetto",
         "qwertfisch"
-	],
-	"description": "Neo-Tastaturlayouts für Windows",
-	"libs": [
-		"user32", "gdi32"
-	],
-    "sourceFiles": ["res\\reneo.res"],
-	"license": "GPL-3.0",
+    ],
+    "description": "Neo-Tastaturlayouts für Windows",
+    "license": "GPL-3.0",
     "name": "reneo",
+    "libs": ["user32", "gdi32", "wtsapi32"],
     "versions": ["Windows10"],
+    "libs-windows-x86_64": ["lib/x86_64/cairo"],
+    "copyFiles-windows-x86_64": ["lib/x86_64/*.dll"],
+    "configurations": [
+        {
+            "name": "application",
+            "targetType": "executable",
+            "sourceFiles": ["res/reneo.res"]
+        },
+        {
+            "name": "unittest",
+            "targetType": "executable",
+            "targetName": "reneo-test"
+        }
+    ],
     "buildTypes": {
         "debug": {
             "buildOptions": ["debugMode", "debugInfo"],
@@ -22,9 +33,9 @@
             "versions": ["FileLogging"]
         },
         "release": {
-            "lflags": ["/SUBSYSTEM:windows", "/ENTRY:mainCRTStartup"]
+            "buildOptions": ["releaseMode", "optimize", "inline"],
+            "lflags-windows-dmd": ["/SUBSYSTEM:windows", "/ENTRY:mainCRTStartup"],
+            "lflags-windows-ldc": ["/SUBSYSTEM:windows", "/ENTRY:wmainCRTStartup"]
         }
-    },
-    "libs-windows-x86_64": ["lib/x86_64/cairo"],
-    "copyFiles-windows-x86_64": ["lib/x86_64/*.dll"]
+    }
 }

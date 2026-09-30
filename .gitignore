@@ -7,4 +7,5 @@
 *.zip
 /*.dll
 config.json
-/source/gen/packageVersion.d
+*.pdb
+/reneo-test*
