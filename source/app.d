@@ -21,6 +21,8 @@ import std.path;
 import std.stdio;
 import std.json;
 import std.regex : Regex, regex, matchFirst;
+import std.algorithm : canFind;
+import std.array : join;
 import std.process : environment;
 import std.datetime.systime : Clock;
 import logging;
@@ -93,8 +95,8 @@ BlacklistEntry[] configBlacklist;
 
 // Default values, are overwritten if hotkeys are set in user config
 string hotkeyToggleActivationStr;
-string hotkeyToggleOSKStr = "Mod3+F1";
-string hotkeyToggleOneHandedModeStr = "Mod3+F10";
+string hotkeyToggleOSKStr = "M3+F1";
+string hotkeyToggleOneHandedModeStr = "M3+F10";
 
 HWND hwnd;
 
@@ -113,6 +115,8 @@ const UINT ID_TRAY_ACTIVATE_CONTEXTMENU = 0x1100;
 const UINT ID_TRAY_RELOAD_CONTEXTMENU = 0x1101;
 const UINT ID_TRAY_OSK_CONTEXTMENU = 0x1102;
 const UINT ID_TRAY_ONE_HANDED_MODE_CONTEXTMENU = 0x1103;
+const UINT ID_TRAY_OPEN_SETTINGS = 0x1104;
+const UINT ID_TRAY_OPEN_LOG_FOLDER = 0x1105;
 const UINT ID_TRAY_VERSION = 0x110E;
 const UINT ID_TRAY_QUIT_CONTEXTMENU = 0x110F;
 const UINT ID_LAYOUTMENU = 0x1200;
@@ -122,6 +126,22 @@ const UINT ID_HOTKEY_OSK = 0x002;
 const UINT ID_HOTKEY_ONE_HANDED_MODE = 0x003;
 
 const UINT LAYOUTMENU_POSITION = 0;
+
+const UINT WM_HOOK_ACTION = WM_APP + 2;
+enum HookAction : WPARAM {
+    toggleOsk = 1,
+    toggleOneHandedMode,
+    updateTray
+}
+
+// Called from the keyboard hook: the action runs later on the message loop, so the hook returns quickly
+void postHookAction(HookAction action) nothrow {
+    PostMessage(hwnd, WM_HOOK_ACTION, action, 0);
+}
+
+void requestTrayUpdate() nothrow {
+    postHookAction(HookAction.updateTray);
+}
 
 const UINT_PTR ID_TIMER_HOOK_WATCHDOG = 0x001;
 // Windows silently removes low level hooks whose callback takes longer than LowLevelHooksTimeout
@@ -333,11 +353,7 @@ void checkKeyboardLayout() nothrow {
 
     // Update tray menu: enable layout selection only if standalone mode is currently active
     if (configStandaloneMode) {
-        if (standaloneModeActive) {
-            EnableMenuItem(contextMenu, LAYOUTMENU_POSITION, MF_BYPOSITION | MF_ENABLED);
-        } else {
-            EnableMenuItem(contextMenu, LAYOUTMENU_POSITION, MF_BYPOSITION | MF_GRAYED);
-        }
+        updateLayoutMenuItem();
     }
 
     if (layout != null) {
@@ -345,6 +361,7 @@ void checkKeyboardLayout() nothrow {
 
         if (setActiveLayout(layout)) {
             debugWriteln("Changing keyboard layout to ", layout.name);
+            requestTrayUpdate();
         }
     } else {
         if (!bypassBecauseNoMatchingLayout) {
@@ -378,21 +395,35 @@ LRESULT WndProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam) nothrow {
         return 0;
 
         case WM_TRAYICON:
-        // From https://docs.microsoft.com/en-us/windows/win32/shell/taskbar#adding-modifying-and-deleting-icons-in-the-notification-area:
-        // The wParam parameter of the message contains the identifier of the taskbar icon in which the event occurred.
-        // The lParam parameter holds the mouse or keyboard message associated with the event.
-
-        // We can omit the check for wParam as we use only a single notification icon
-        switch(lParam) {
+        // NOTIFYICON_VERSION_4: the low word of lParam is the event, wParam holds the icon's anchor point
+        POINT anchor = POINT(cast(short) LOWORD(wParam), cast(short) HIWORD(wParam));
+        switch (LOWORD(lParam)) {
             case WM_LBUTTONDBLCLK:
             // Execute the same action as the context menu default item
             handleMenuCommand(GetMenuDefaultItem(contextMenu, 0, 0));
             break;
 
             case WM_CONTEXTMENU:
-            handleMenuCommand(trayIcon.showContextMenu(hwnd, contextMenu));
+            handleMenuCommand(trayIcon.showContextMenu(hwnd, contextMenu, anchor));
             break;
 
+            case NIN_KEYSELECT:
+            // Icon selected with the keyboard (Win+B, arrow keys, Enter or Space)
+            if (!trayIcon.menuJustClosed()) {
+                handleMenuCommand(trayIcon.showContextMenu(hwnd, contextMenu, anchor));
+            }
+            break;
+
+            default: break;
+        }
+        break;
+
+        case WM_HOOK_ACTION:
+        // Actions requested from the keyboard hook, which must not block
+        switch (wParam) {
+            case HookAction.toggleOsk: toggleOSK(); break;
+            case HookAction.toggleOneHandedMode: toggleOneHandedMode(); break;
+            case HookAction.updateTray: updateTrayTooltip(); break;
             default: break;
         }
         break;
@@ -454,7 +485,11 @@ LRESULT WndProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam) nothrow {
             been created. When this message is received, the tray icon needs to be
             readded. **/
             debugWriteln("Show tray icon");
+            loadTrayIcons();
             trayIcon.show();
+        } else if (msg == WM_DPICHANGED || msg == WM_DISPLAYCHANGE || msg == WM_SETTINGCHANGE) {
+            // The taskbar's DPI might have changed
+            loadTrayIcons();
         }
         return oskWndProc(hwnd, msg, wParam, lParam);
     }
@@ -489,9 +524,19 @@ void handleMenuCommand(UINT command) {
         case ID_TRAY_RELOAD_CONTEXTMENU:
         debugWriteln("Re-initialize...");
         initialize();
+        buildContextMenu();
         dllNameCache.clear();
         recoverFromLostInput();
         updateOSK();
+        break;
+
+        case ID_TRAY_OPEN_SETTINGS:
+        openInShell(buildPath(configDir, "config.json"), true);
+        break;
+
+        case ID_TRAY_OPEN_LOG_FOLDER:
+        mkdirRecurse(logDir);
+        openInShell(logDir, false);
         break;
 
         case ID_TRAY_QUIT_CONTEXTMENU:
@@ -548,15 +593,117 @@ void toggleOneHandedMode() nothrow {
         updateContextMenu();
     } catch (Exception e) {
     }
+    updateTrayTooltip();
 }
 
-void modifyMenuItemString(HMENU hMenu, UINT id, string text) {
+void modifyMenuItemString(HMENU hMenu, UINT id, string text, bool byPosition = false) {
     // Changing a menu entry is cumbersome by hand (or foot)
     MENUITEMINFO mii;
     mii.cbSize = MENUITEMINFO.sizeof;
     mii.fMask = MIIM_STRING;
     mii.dwTypeData = toUTFz!(wchar*)(text);
-    SetMenuItemInfo(hMenu, id, 0, &mii);
+    SetMenuItemInfo(hMenu, id, byPosition, &mii);
+}
+
+void updateLayoutMenuItem() nothrow {
+    // In extension mode the layout is selected in Windows, so the submenu is disabled and says why
+    try {
+        EnableMenuItem(contextMenu, LAYOUTMENU_POSITION, MF_BYPOSITION | (standaloneModeActive ? MF_ENABLED : MF_GRAYED));
+        modifyMenuItemString(contextMenu, LAYOUTMENU_POSITION,
+            appString(standaloneModeActive ? AppString.MENU_CHOOSE_LAYOUT : AppString.MENU_LAYOUT_FROM_WINDOWS), true);
+    } catch (Exception e) {}
+}
+
+void buildContextMenu() {
+    if (contextMenu) {
+        DestroyMenu(contextMenu);  // also destroys the layout submenu of the previous initialization
+    }
+    contextMenu = CreatePopupMenu();
+
+    if (configStandaloneMode) {
+        AppendMenu(contextMenu, MF_POPUP, cast(UINT_PTR) layoutMenu, appStringwz(AppString.MENU_CHOOSE_LAYOUT));
+        AppendMenu(contextMenu, MF_SEPARATOR, 0, NULL);
+    } else if (layoutMenu) {
+        DestroyMenu(layoutMenu);
+        layoutMenu = null;
+    }
+    AppendMenu(contextMenu, MF_STRING, ID_TRAY_OSK_CONTEXTMENU, appStringwz(AppString.MENU_OSK, hotkeyToggleOSKStr));
+    AppendMenu(contextMenu, MF_STRING, ID_TRAY_ONE_HANDED_MODE_CONTEXTMENU, appStringwz(AppString.MENU_ONE_HANDED_MODE, hotkeyToggleOneHandedModeStr));
+    AppendMenu(contextMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(contextMenu, MF_STRING, ID_TRAY_OPEN_SETTINGS, appStringwz(AppString.MENU_OPEN_SETTINGS));
+    version (FileLogging) {
+        AppendMenu(contextMenu, MF_STRING, ID_TRAY_OPEN_LOG_FOLDER, appStringwz(AppString.MENU_OPEN_LOG_FOLDER));
+    }
+    AppendMenu(contextMenu, MF_STRING, ID_TRAY_RELOAD_CONTEXTMENU, appStringwz(AppString.MENU_RELOAD));
+    AppendMenu(contextMenu, MF_STRING, ID_TRAY_ACTIVATE_CONTEXTMENU, appStringwz(AppString.MENU_DISABLE, hotkeyToggleActivationStr));
+    AppendMenu(contextMenu, MF_SEPARATOR, 0, NULL);
+    string versionMsg = "ReNeo %VERSION%";   // text is replaced by GitHub release action
+    if (versionMsg.canFind("%" ~ "VERSION%")) {  // split, so the release action doesn't replace this one
+        versionMsg = appString(AppString.MENU_DEVELOPMENT_VERSION);
+    }
+    AppendMenu(contextMenu, MF_STRING, ID_TRAY_VERSION, versionMsg.toUTF16z);
+    EnableMenuItem(contextMenu, ID_TRAY_VERSION, MF_BYCOMMAND | MF_GRAYED);
+    AppendMenu(contextMenu, MF_STRING, ID_TRAY_QUIT_CONTEXTMENU, appStringwz(AppString.MENU_QUIT));
+    SetMenuDefaultItem(contextMenu, ID_TRAY_ACTIVATE_CONTEXTMENU, 0);
+
+    if (configStandaloneMode) {
+        updateLayoutMenuItem();
+    }
+    if (trayIcon) {
+        updateContextMenu();
+    }
+}
+
+// Opens a file with its associated program, or a folder in Explorer
+void openInShell(string path, bool isFile) {
+    auto result = cast(size_t) ShellExecuteW(hwnd, "open"w.ptr, path.toUTF16z, null, null, SW_SHOWNORMAL);
+    if (result <= 32 && isFile) {
+        // No program is associated with the file type (common for .json), fall back to Notepad
+        ShellExecuteW(hwnd, "open"w.ptr, "notepad.exe"w.ptr, ("\"" ~ path ~ "\"").toUTF16z, null, SW_SHOWNORMAL);
+    }
+}
+
+// Tray icons must have the small icon size for the taskbar's DPI. Loading them at the default (large) size makes
+// Windows scale them down and ignores the small sizes that are drawn separately in the icon file.
+int trayIconSize() nothrow {
+    alias GetDpiForWindowFn = extern (Windows) UINT function(HWND) nothrow @nogc;
+    alias GetSystemMetricsForDpiFn = extern (Windows) int function(int, UINT) nothrow @nogc;
+
+    // Only available since Windows 10 1607
+    HMODULE user32 = GetModuleHandle("user32.dll");
+    auto getDpiForWindow = cast(GetDpiForWindowFn) GetProcAddress(user32, "GetDpiForWindow");
+    auto getSystemMetricsForDpi = cast(GetSystemMetricsForDpiFn) GetProcAddress(user32, "GetSystemMetricsForDpi");
+    HWND taskbar = FindWindow("Shell_TrayWnd", null);
+    if (getDpiForWindow && getSystemMetricsForDpi && taskbar) {
+        UINT dpi = getDpiForWindow(taskbar);
+        if (dpi) {
+            return getSystemMetricsForDpi(SM_CXSMICON, dpi);
+        }
+    }
+    return GetSystemMetrics(SM_CXSMICON);
+}
+
+void loadTrayIcons() nothrow {
+    int size = trayIconSize();
+    HINSTANCE hInstance = GetModuleHandle(NULL);
+    // Names of icons are defined in reneo.rc
+    HICON newEnabled = LoadImage(hInstance, "trayenabled", IMAGE_ICON, size, size, 0);
+    HICON newDisabled = LoadImage(hInstance, "traydisabled", IMAGE_ICON, size, size, 0);
+    if (!newEnabled || !newDisabled) {
+        if (newEnabled) DestroyIcon(newEnabled);
+        if (newDisabled) DestroyIcon(newDisabled);
+        return;
+    }
+
+    HICON oldEnabled = iconEnabled, oldDisabled = iconDisabled;
+    iconEnabled = newEnabled;
+    iconDisabled = newDisabled;
+    SetClassLongPtr(hwnd, GCLP_HICON, cast(LONG_PTR) iconEnabled);
+    if (trayIcon) {
+        trayIcon.setIcon(keyboardHookActive ? iconEnabled : iconDisabled);
+    }
+    if (oldEnabled) DestroyIcon(oldEnabled);
+    if (oldDisabled) DestroyIcon(oldDisabled);
 }
 
 void updateContextMenu() {
@@ -582,18 +729,37 @@ void updateContextMenu() {
 }
 
 void updateTrayTooltip() nothrow {
+    if (!trayIcon) {
+        return;
+    }
+
     try {
-        wstring layoutName = appString(AppString.TRAY_INACTIVE).to!wstring;
-        if (resultingHookState && activeLayout) {
-            layoutName = (standaloneModeActive ? ""w : "+"w) ~ activeLayout.name;
-        }
-        wstring tip = APPNAME ~ " (" ~ layoutName ~ ")";
-        version (FileLogging) {
-            if (fileLoggingActive()) {
-                tip ~= appString(AppString.TRAY_LOGGING).to!wstring;
+        string[] lines;
+        if (!keyboardHookActive) {
+            lines ~= "ReNeo · " ~ appString(AppString.TRAY_PAUSED);
+            if (hotkeyToggleActivationStr.length > 0) {
+                lines ~= appString(AppString.TRAY_RESUME_HINT, hotkeyToggleActivationStr);
+            }
+        } else if (bypassBecauseWindowInBlacklist || bypassBecauseNoMatchingLayout || !activeLayout) {
+            lines ~= "ReNeo · " ~ appString(AppString.TRAY_BYPASSED);
+            lines ~= appString(bypassBecauseWindowInBlacklist ? AppString.TRAY_BLACKLISTED : AppString.TRAY_NO_NEO_LAYOUT);
+        } else {
+            lines ~= "ReNeo · " ~ activeLayout.name.to!string;
+            lines ~= standaloneModeActive ? appString(AppString.TRAY_STANDALONE)
+                : appString(AppString.TRAY_EXTENSION, activeLayout.dllName.to!string);
+            if (mod4Lock) {
+                lines ~= appString(AppString.TRAY_MOD4_LOCK);
+            }
+            if (oneHandedModeActive) {
+                lines ~= appString(AppString.TRAY_ONE_HANDED);
             }
         }
-        trayIcon.setTip(tip.to!(wchar[]));
+        version (FileLogging) {
+            if (fileLoggingActive()) {
+                lines ~= appString(AppString.TRAY_LOGGING);
+            }
+        }
+        trayIcon.setTip(lines.join("\n").to!wstring);
     } catch (Exception e) {}
 }
 
@@ -622,7 +788,8 @@ void onHookStateUpdate() nothrow {
         setNumlockState(previousNumlockState);
     }
 
-    updateTrayTooltip();
+    // May be called from the keyboard hook, so don't talk to the taskbar directly
+    requestTrayUpdate();
 
     previousResultingHookState = resultingHookState;
 }
@@ -890,10 +1057,12 @@ version (unittest) {
     extern (C) __gshared string[] rt_options = ["testmode=test-only"];
 }
 
+// Log files of the debug build are kept in a fixed place and deleted after the retention period
+string logDir;
+
 void setUpLogFile() {
-    // Log files of the debug build are kept in a fixed place and deleted after the retention period.
     // This also runs in normal builds, so that switching back from the debug build cleans up old logs.
-    string logDir = buildPath(environment.get("LOCALAPPDATA", executableDir), "ReNeo", "logs");
+    logDir = buildPath(environment.get("LOCALAPPDATA", executableDir), "ReNeo", "logs");
 
     version (FileLogging) {
         auto answer = MessageBox(null, appStringwz(AppString.LOG_CONSENT, logDir, configDebugLogRetentionDays),
@@ -966,11 +1135,7 @@ void run() {
     // Move and scale window to center of its current monitor
     centerOskOnScreen(hwnd);
 
-    // Names of icons are defined in icons.rc
-    iconEnabled = LoadImage(hInstance, "trayenabled", IMAGE_ICON, 0, 0, LR_SHARED | LR_DEFAULTSIZE);
-    iconDisabled = LoadImage(hInstance, "traydisabled", IMAGE_ICON, 0, 0, LR_SHARED | LR_DEFAULTSIZE);
-
-    SetClassLongPtr(hwnd, GCLP_HICON, cast(LONG_PTR) iconEnabled);
+    loadTrayIcons();
 
     // Install icon in notification area, based on the hwnd
     trayIcon = new TrayIcon(hwnd, ID_MYTRAYICON, iconEnabled, APPNAME.to!(wchar[]));
@@ -981,22 +1146,7 @@ void run() {
         debugWriteln("Could not register for session notifications!");
     }
 
-    // Define context menu
-    contextMenu = CreatePopupMenu();
-    if (configStandaloneMode) {
-        AppendMenu(contextMenu, MF_POPUP, cast(UINT_PTR) layoutMenu, appStringwz(AppString.MENU_CHOOSE_LAYOUT));
-        AppendMenu(contextMenu, MF_SEPARATOR, 0, NULL);
-    }
-    AppendMenu(contextMenu, MF_STRING, ID_TRAY_OSK_CONTEXTMENU, appStringwz(AppString.MENU_OSK, hotkeyToggleOSKStr));
-    AppendMenu(contextMenu, MF_STRING, ID_TRAY_ONE_HANDED_MODE_CONTEXTMENU, appStringwz(AppString.MENU_ONE_HANDED_MODE, hotkeyToggleOneHandedModeStr));
-    AppendMenu(contextMenu, MF_STRING, ID_TRAY_RELOAD_CONTEXTMENU, appStringwz(AppString.MENU_RELOAD));
-    AppendMenu(contextMenu, MF_STRING, ID_TRAY_ACTIVATE_CONTEXTMENU, appStringwz(AppString.MENU_DISABLE, hotkeyToggleActivationStr));
-    AppendMenu(contextMenu, MF_SEPARATOR, 0, NULL);
-    string versionMsg = "ReNeo %VERSION%";   // text is replaced by GitHub release action
-    AppendMenu(contextMenu, MF_STRING, ID_TRAY_VERSION, versionMsg.toUTF16z);
-    EnableMenuItem(contextMenu, ID_TRAY_VERSION, MF_BYCOMMAND | MF_GRAYED);
-    AppendMenu(contextMenu, MF_STRING, ID_TRAY_QUIT_CONTEXTMENU, appStringwz(AppString.MENU_QUIT));
-    SetMenuDefaultItem(contextMenu, ID_TRAY_ACTIVATE_CONTEXTMENU, 0);
+    buildContextMenu();
 
     keyboardHookActive = false;
     toggleKeyboardHook();

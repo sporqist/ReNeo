@@ -550,3 +550,30 @@ version (FileLogging) unittest {
     }
     assert(!log.canFind(format("Scan 0x%04X", 'q')), log);
 }
+
+unittest {
+    // Every tray menu item has an access key ("&"), and they are unique within the menu
+    import localization : initLocalization, appString, AppString, Language;
+    import std.algorithm : countUntil;
+    import std.uni : toLower;
+
+    foreach (language; [Language.ENGLISH, Language.GERMAN]) {
+        initLocalization(language);
+        foreach (toggle; [AppString.MENU_DISABLE, AppString.MENU_ENABLE]) {
+            dchar[] keys;
+            foreach (item; [AppString.MENU_CHOOSE_LAYOUT, AppString.MENU_OSK, AppString.MENU_ONE_HANDED_MODE,
+                    AppString.MENU_OPEN_SETTINGS, AppString.MENU_OPEN_LOG_FOLDER, AppString.MENU_RELOAD, toggle, AppString.MENU_QUIT]) {
+                // Items with a hotkey take it as argument, the others take none
+                string text = appString(item, "X");
+                if (text.length == 0) {
+                    text = appString(item);
+                }
+                auto i = text.countUntil('&');
+                assert(i >= 0 && i + 1 < text.length, text);
+                dchar key = text[i + 1 .. $].to!dstring[0].toLower;
+                assert(!keys.canFind(key), text);
+                keys ~= key;
+            }
+        }
+    }
+}

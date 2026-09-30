@@ -4,88 +4,110 @@ import core.sys.windows.windows;
 
 const UINT WM_TRAYICON = WM_USER + 10;
 
+// Not (completely) in druntime's bindings
+const UINT NOTIFYICON_VERSION_4 = 4;
+const UINT NIF_SHOWTIP = 0x00000080;
+const UINT NIN_SELECT = WM_USER + 0;
+const UINT NIN_KEYSELECT = WM_USER + 1;
+const UINT TPM_WORKAREA = 0x10000;
+
+// NOTIFYICONDATAW as of Windows Vista (druntime only has the XP version without hBalloonIcon)
+struct NotifyIconData {
+    DWORD cbSize = NotifyIconData.sizeof;
+    HWND hWnd;
+    UINT uID;
+    UINT uFlags;
+    UINT uCallbackMessage;
+    HICON hIcon;
+    WCHAR[128] szTip = 0;
+    DWORD dwState;
+    DWORD dwStateMask;
+    WCHAR[256] szInfo = 0;
+    UINT uVersion;
+    WCHAR[64] szInfoTitle = 0;
+    DWORD dwInfoFlags;
+    GUID guidItem;
+    HICON hBalloonIcon;
+}
+
+extern (Windows) BOOL Shell_NotifyIconW(DWORD dwMessage, NotifyIconData* lpData) nothrow @nogc;
+
 class TrayIcon {
-    NOTIFYICONDATA nid;
-    const MAX_TIPLEN = NOTIFYICONDATA.szTip.sizeof - 1;
+    NotifyIconData nid;
+    // Number of characters, the last one is reserved for the terminating null
+    enum MAX_TIPLEN = nid.szTip.length - 1;
 
     bool visible = false;
     size_t tipLen;
+    DWORD lastMenuClosed;
 
-    this(HWND hwndParent, UINT id, HICON hicon, wchar[] tooltip)	{
-        nid.cbSize = NOTIFYICONDATA.sizeof;
+    this(HWND hwndParent, UINT id, HICON hicon, wchar[] tooltip) {
         nid.hWnd = hwndParent;
         nid.uID = id;
-        nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+        nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
         nid.uCallbackMessage = WM_TRAYICON;
         nid.hIcon = hicon;
-        // handle keyboard and mouse events differently beginning with Windows 2000.
-        nid.uVersion = NOTIFYICON_VERSION;
+        // Version 4: the event is in the low word of lParam, the icon's anchor point in wParam, and
+        // keyboard selection (Win+B, arrow keys, Enter) is reported as NIN_KEYSELECT
+        nid.uVersion = NOTIFYICON_VERSION_4;
 
         this.setTip(tooltip);
     }
-    
+
     ~this() {
         hide();
     }
 
-    // in case WM_TRAYICON conflicts, use this
-    void message(UINT newMessage) {
-        nid.uCallbackMessage = newMessage;
-        if (visible) {
-            Shell_NotifyIcon(NIM_MODIFY, &nid);
-        }
-    }
-
-    UINT id() {
-        return nid.uID;
-    }
-    
-    void show() {
+    void show() nothrow {
         hide();
-        Shell_NotifyIcon(NIM_ADD, &nid);
-        Shell_NotifyIcon(NIM_SETVERSION, &nid);
+        Shell_NotifyIconW(NIM_ADD, &nid);
+        Shell_NotifyIconW(NIM_SETVERSION, &nid);
         visible = true;
     }
 
-    void hide() {
+    void hide() nothrow {
         if (visible) {
-            Shell_NotifyIcon(NIM_DELETE, &nid);
+            Shell_NotifyIconW(NIM_DELETE, &nid);
             visible = false;
         }
     }
 
-    wchar[] tip() {
-        return nid.szTip[0 .. tipLen];
-    }
-
-    void setTip(wchar[] newTip) nothrow {
+    void setTip(const(wchar)[] newTip) nothrow {
         tipLen = (newTip.length > MAX_TIPLEN) ? MAX_TIPLEN : newTip.length;
         nid.szTip[0 .. tipLen] = newTip[0 .. tipLen];
         nid.szTip[tipLen] = 0;
         if (visible) {
-            Shell_NotifyIcon(NIM_MODIFY, &nid);
+            Shell_NotifyIconW(NIM_MODIFY, &nid);
         }
     }
 
-    HICON icon() {
-        return nid.hIcon;
-    }   
-
-    void setIcon(HICON hnewIcon) {
+    void setIcon(HICON hnewIcon) nothrow {
         nid.hIcon = hnewIcon;
-        if(visible) {
-            Shell_NotifyIcon(NIM_MODIFY, &nid);
+        if (visible) {
+            Shell_NotifyIconW(NIM_MODIFY, &nid);
         }
     }
 
-    // Returns the ID of the selected menu item, or 0 if the menu was dismissed
-    UINT showContextMenu(HWND hwndParent, HMENU menu) {
-        POINT curPoint;
-        GetCursorPos(&curPoint);
-
+    // Shows the menu at the given point (the icon's anchor for keyboard selection, else the cursor).
+    // Returns the ID of the selected menu item, or 0 if the menu was dismissed.
+    UINT showContextMenu(HWND hwndParent, HMENU menu, POINT anchor) nothrow {
+        // Required so that the menu closes when clicking elsewhere
         SetForegroundWindow(hwndParent);
-        // Alignment for contextmenu left/bottom, which seems the most practical and common use
-        return cast(UINT) TrackPopupMenuEx(menu, TPM_LEFTBUTTON | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
-            curPoint.x, curPoint.y, hwndParent, NULL);
+
+        UINT flags = TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RETURNCMD | TPM_NONOTIFY | TPM_WORKAREA;
+        flags |= GetSystemMetrics(SM_MENUDROPALIGNMENT) ? TPM_RIGHTALIGN : TPM_LEFTALIGN;
+        UINT command = cast(UINT) TrackPopupMenuEx(menu, flags, anchor.x, anchor.y, hwndParent, NULL);
+
+        // Also required for notification icon menus, otherwise the menu doesn't reliably open the next time
+        // (see the remarks of TrackPopupMenu)
+        PostMessage(hwndParent, WM_NULL, 0, 0);
+        lastMenuClosed = GetTickCount();
+        return command;
+    }
+
+    // Pressing space on a selected tray icon sends NIN_KEYSELECT twice. Ignore the second one, which
+    // arrives right after the menu of the first one was closed.
+    bool menuJustClosed() nothrow {
+        return GetTickCount() - lastMenuClosed < 300;
     }
 }

@@ -15,7 +15,7 @@ import core.sys.windows.windows;
 import mapping;
 import composer;
 public import logging : debugWriteln, debugWritelnPrivate;
-import app : configAutoNumlock, configEnableMod4Lock, configFilterNeoModifiers, configOneHandedModeMirrorKey, configOneHandedModeMirrorMap, updateOSKAsync, toggleOSK, toggleOneHandedMode, lastInputLocale;
+import app : configAutoNumlock, configEnableMod4Lock, configFilterNeoModifiers, configOneHandedModeMirrorKey, configOneHandedModeMirrorMap, updateOSKAsync, postHookAction, HookAction, requestTrayUpdate, lastInputLocale;
 
 const SC_FAKE_LSHIFT = 0x22A;
 const SC_FAKE_RSHIFT = 0x236;
@@ -653,8 +653,10 @@ bool handleKeyEvent(Scancode scan, bool down) nothrow {
 
             if (mod == Modifier.LMOD4 && !isModifierHeld(Modifier.LMOD4) && isModifierHeld(Modifier.RMOD4) ||
                 mod == Modifier.RMOD4 && !isModifierHeld(Modifier.RMOD4) && isModifierHeld(Modifier.LMOD4)) {
-                if (configEnableMod4Lock || mod4Lock)  // always allow lock to be disabled
+                if (configEnableMod4Lock || mod4Lock) {  // always allow lock to be disabled
                     mod4Lock = !mod4Lock;
+                    requestTrayUpdate();
+                }
             }
         }
 
@@ -935,13 +937,13 @@ bool keyboardHook(WPARAM msgType, KBDLLHOOKSTRUCT msgStruct) nothrow {
 
     // Toggle OSK on M3+F1
     if (vk == VK_F1 && down && (isModifierHeld(Modifier.LMOD3) || isModifierHeld(Modifier.RMOD3))) {
-        toggleOSK();
+        postHookAction(HookAction.toggleOsk);
         return true;  // Eat F1
     }
 
     // Toggle one handed mode on M3+F10
     if (vk == VK_F10 && down && (isModifierHeld(Modifier.LMOD3) || isModifierHeld(Modifier.RMOD3))) {
-        toggleOneHandedMode();
+        postHookAction(HookAction.toggleOneHandedMode);
         return true;  // Eat F10
     }
 
