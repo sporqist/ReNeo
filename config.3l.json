@@ -6,6 +6,7 @@
     "autoNumlock": true,
     "enableMod4Lock": true,
     "warnUnprotectedInstallation": true,
+    "debugLogRetentionDays": 7,
     "osk": {
         "numpad": false,
         "theme": "Grey",

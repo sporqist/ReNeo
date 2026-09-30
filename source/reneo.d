@@ -14,6 +14,7 @@ import core.sys.windows.windows;
 
 import mapping;
 import composer;
+public import logging : debugWriteln, debugWritelnPrivate;
 import app : configAutoNumlock, configEnableMod4Lock, configFilterNeoModifiers, configOneHandedModeMirrorKey, configOneHandedModeMirrorMap, updateOSKAsync, toggleOSK, toggleOneHandedMode, lastInputLocale;
 
 const SC_FAKE_LSHIFT = 0x22A;
@@ -31,10 +32,6 @@ Scancode scanNumlock = Scancode(0x45, true);
 
 Scancode[Modifier] SCANCODE_BY_MODIFIER;
 
-version(FileLogging) {
-    File logFile;
-}
-
 static this() {
     SCANCODE_BY_MODIFIER = [
         Modifier.LSHIFT: Scancode(0x2A, false),
@@ -45,27 +42,6 @@ static this() {
         Modifier.RALT: Scancode(0x38, true)
     ];
 
-    version(FileLogging) {
-        logFile = File("reneo_log.txt", "a+");
-    }
-}
-
-void debugWriteln(T...)(T args) nothrow {
-    debug {
-        // Keep the test output readable
-        version (unittest) {} else {
-            writeln(args);
-        }
-    }
-
-    version(FileLogging) {
-        try {
-        auto currTime = Clock.currTime();
-        string timeString = format("%04d-%02d-%02d %02d:%02d:%02d.%03d ", currTime.year(), currTime.month(), currTime.day(), currTime.hour(), currTime.minute(), currTime.second(), cast(int) currTime.fracSecs().total!"msecs");
-        logFile.writeln(timeString, args);
-        logFile.flush();  // flush immediately in case we crash
-        } catch (Exception e) {}
-    }
 }
 
 uint[string] keysymsByName;
@@ -289,7 +265,7 @@ void sendUTF16OrKeyCombo(dchar unicodeChar, bool down) nothrow {
     /// Send a native key combo if there is one in the current layout, otherwise send unicode directly
     debug {
         try {
-            debugWriteln(format("Trying to send %s (0x%04X) ...", unicodeChar, to!int(unicodeChar)));
+            debugWritelnPrivate("Trying to send a character ...", format("Trying to send %s (0x%04X) ...", unicodeChar, to!int(unicodeChar)));
         }
         catch (Exception e) {}
     }
@@ -314,7 +290,7 @@ void sendUTF16OrKeyCombo(dchar unicodeChar, bool down) nothrow {
 
     if (low == 0xFF || kana || mod5 || mod6) {
         // char does not exist in native layout or requires exotic modifiers
-        debugWriteln("No standard key combination found, sending VK packet instead.");
+        debugWritelnPrivate("Sending VK packet.", "No standard key combination found, sending VK packet instead.");
         sendUnicodeChar(unicodeChar, down);
         return;
     }
@@ -327,7 +303,7 @@ void sendUTF16OrKeyCombo(dchar unicodeChar, bool down) nothrow {
             auto kanaText  = kana  ? "(Kana)  " : "        ";
             auto mod5Text  = mod5  ? "(Mod5)  " : "        ";
             auto mod6Text  = mod6  ? "(Mod6)  " : "        ";
-            debugWriteln("Key combination is " ~ to!string(cast(VKEY) vk) ~ " "
+            debugWritelnPrivate("Sending key combination.", "Key combination is " ~ to!string(cast(VKEY) vk) ~ " "
                 ~ shiftText ~ ctrlText ~ altText ~ kanaText ~ mod5Text ~ mod6Text);
         } catch (Exception ex) {}
     }
@@ -346,7 +322,7 @@ void sendUTF16OrKeyCombo(dchar unicodeChar, bool down) nothrow {
     
     auto unicodeTranslationResult = ToUnicodeEx(vk, 0, kb.ptr, buf.ptr, 4, 0, lastInputLocale);
     if (unicodeTranslationResult == -1) {
-        debugWriteln("Standard key combination results in a dead key, sending VK packet instead.");
+        debugWritelnPrivate("Sending VK packet.", "Standard key combination results in a dead key, sending VK packet instead.");
         // The same dead key needs to be queried again, because ToUnicode() inserts the dead key (state)
         // into the queue, while anothèr call consumes the dead key.
         // See https://github.com/Lexikos/AutoHotkey_L/blob/master/source/hook.cpp#L2597
@@ -354,11 +330,11 @@ void sendUTF16OrKeyCombo(dchar unicodeChar, bool down) nothrow {
         sendUnicodeChar(unicodeChar, down);
         return;
     } else if (unicodeTranslationResult == 0) {
-        debugWriteln("Key combination does not exist natively, sending VK packet instead.");
+        debugWritelnPrivate("Sending VK packet.", "Key combination does not exist natively, sending VK packet instead.");
         sendUnicodeChar(unicodeChar, down);
         return;
     } else if (buf[0] != unicodeChar) {
-        debugWriteln("Key combination does not produce desired character, sending VK packet instead.");
+        debugWritelnPrivate("Sending VK packet.", "Key combination does not produce desired character, sending VK packet instead.");
         sendUnicodeChar(unicodeChar, down);
         return;
     }
@@ -875,6 +851,28 @@ bool handleKeyEvent(Scancode scan, bool down) nothrow {
 }
 
 
+// Keys whose events don't reveal typed text: modifiers, function, navigation and media keys. Events of all other
+// keys (letters, digits, punctuation, space, enter, backspace, numpad, Unicode packets) are redacted in shareable logs.
+bool isNonTextKey(VKEY vk, Scancode scan) nothrow {
+    if (activeLayout && scan in activeLayout.modifiers) {
+        return true;
+    }
+
+    switch (vk) {
+        case VKEY.VK_SHIFT: .. case VKEY.VK_CAPITAL:  // Shift, Ctrl, Alt, Pause, Capslock
+        case VKEY.VK_ESCAPE:
+        case VKEY.VK_PRIOR: .. case VKEY.VK_DOWN:  // Page up/down, End, Home, arrows
+        case VKEY.VK_INSERT: case VKEY.VK_DELETE: case VKEY.VK_SNAPSHOT:
+        case VKEY.VK_LWIN: case VKEY.VK_RWIN: case VKEY.VK_APPS:
+        case VKEY.VK_F1: .. case VKEY.VK_F24:
+        case VKEY.VK_NUMLOCK: case VKEY.VK_SCROLL:
+        case VKEY.VK_LSHIFT: .. case VKEY.VK_LAUNCH_APP2:  // left/right modifiers, browser and media keys
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool keyboardHook(WPARAM msgType, KBDLLHOOKSTRUCT msgStruct) nothrow {
     auto vk = cast(VKEY) msgStruct.vkCode;
     bool down = msgType == WM_KEYDOWN || msgType == WM_SYSKEYDOWN;
@@ -889,7 +887,12 @@ bool keyboardHook(WPARAM msgType, KBDLLHOOKSTRUCT msgStruct) nothrow {
         auto extendedText = scan.extended ? "(Ext) " : "      ";
 
         try {
-            debugWriteln(injectedText ~ downText ~ altText ~ extendedText ~ format("| Scan 0x%04X | %s (0x%02X)", scan.scan, to!string(vk), vk));
+            string eventText = injectedText ~ downText ~ altText ~ extendedText;
+            if (isNonTextKey(vk, scan)) {
+                debugWriteln(eventText ~ format("| Scan 0x%04X | %s (0x%02X)", scan.scan, to!string(vk), vk));
+            } else {
+                debugWritelnPrivate(eventText ~ "| text key", eventText ~ format("| Scan 0x%04X | %s (0x%02X)", scan.scan, to!string(vk), vk));
+            }
         } catch(Exception e) {}
     }
 

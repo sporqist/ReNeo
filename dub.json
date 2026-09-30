@@ -32,6 +32,10 @@
             "buildRequirements": ["allowWarnings"],
             "versions": ["FileLogging"]
         },
+        "unittest-log": {
+            "buildOptions": ["unittests", "debugMode", "debugInfo"],
+            "versions": ["FileLogging"]
+        },
         "release": {
             "buildOptions": ["optimize", "inline"],
             "lflags-windows-dmd": ["/SUBSYSTEM:windows", "/ENTRY:mainCRTStartup"],

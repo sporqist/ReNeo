@@ -21,6 +21,10 @@ enum AppString {
     MENU_ONE_HANDED_MODE,
 
     TRAY_INACTIVE,
+    TRAY_LOGGING,
+
+    LOG_CONSENT_TITLE,
+    LOG_CONSENT,
 
     WARNING_SECURITY,
     WARNING_UNPROTECTED_INSTALLATION,
@@ -52,6 +56,20 @@ void initLocalization(Language lang) {
         AppString.MENU_OSK: [Language.ENGLISH: "On-Screen Keyboard\t%s", Language.GERMAN: "Bildschirmtastatur\t%s"],
         AppString.MENU_ONE_HANDED_MODE: [Language.ENGLISH: "One-Handed Mode\t%s", Language.GERMAN: "Einhandmodus\t%s"],
         AppString.TRAY_INACTIVE: [Language.ENGLISH: "inactive", Language.GERMAN: "inaktiv"],
+        AppString.TRAY_LOGGING: [Language.ENGLISH: " - writing log", Language.GERMAN: " - schreibt Log"],
+        AppString.LOG_CONSENT_TITLE: [Language.ENGLISH: "ReNeo debug version", Language.GERMAN: "ReNeo-Debugversion"],
+        AppString.LOG_CONSENT: [
+            Language.ENGLISH: "This is the debug version of ReNeo. It can write a diagnostic log for bug reports to:\n%s\n\n"
+                ~ "The log is meant to be safe to share: keys that produce text, typed characters, compose input and "
+                ~ "window titles are replaced by placeholders. It still shows when and how many keys you pressed, "
+                ~ "and which modifiers and special keys you used.\n\n"
+                ~ "Log files are deleted after %d days.\n\nWrite a log?",
+            Language.GERMAN: "Dies ist die Debugversion von ReNeo. Sie kann für Fehlerberichte ein Diagnoseprotokoll schreiben nach:\n%s\n\n"
+                ~ "Das Protokoll ist zum Teilen gedacht: Tasten, die Text erzeugen, getippte Zeichen, Compose-Eingaben und "
+                ~ "Fenstertitel werden durch Platzhalter ersetzt. Es zeigt aber weiterhin, wann und wie viele Tasten du gedrückt hast "
+                ~ "und welche Modifier und Sondertasten du benutzt hast.\n\n"
+                ~ "Protokolldateien werden nach %d Tagen gelöscht.\n\nProtokoll schreiben?"
+        ],
         AppString.WARNING_SECURITY: [Language.ENGLISH: "ReNeo security warning", Language.GERMAN: "ReNeo-Sicherheitswarnung"],
         AppString.WARNING_UNPROTECTED_INSTALLATION: [
             Language.ENGLISH: "ReNeo runs with administrator rights, but its files can be changed without administrator rights:\n%s\n\n"

@@ -22,6 +22,8 @@ import std.stdio;
 import std.json;
 import std.regex : Regex, regex, matchFirst;
 import std.process : environment;
+import std.datetime.systime : Clock;
+import logging;
 
 HHOOK hHook;
 HWINEVENTHOOK foregroundHook;
@@ -81,6 +83,7 @@ bool configAutoNumlock;
 bool configEnableMod4Lock;
 bool configFilterNeoModifiers;
 bool configWarnUnprotectedInstallation;
+int configDebugLogRetentionDays;
 HotkeyConfig configHotkeyToggleActivation;
 HotkeyConfig configHotkeyToggleOSK;
 HotkeyConfig configHotkeyToggleOneHandedMode;
@@ -584,7 +587,13 @@ void updateTrayTooltip() nothrow {
         if (resultingHookState && activeLayout) {
             layoutName = (standaloneModeActive ? ""w : "+"w) ~ activeLayout.name;
         }
-        trayIcon.setTip((APPNAME ~ " (" ~ layoutName ~ ")").to!(wchar[]));
+        wstring tip = APPNAME ~ " (" ~ layoutName ~ ")";
+        version (FileLogging) {
+            if (fileLoggingActive()) {
+                tip ~= appString(AppString.TRAY_LOGGING).to!wstring;
+            }
+        }
+        trayIcon.setTip(tip.to!(wchar[]));
     } catch (Exception e) {}
 }
 
@@ -673,7 +682,7 @@ void WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idOb
     wchar[256] titleBuffer;
     uint titleLen = GetWindowTextW(hwnd, titleBuffer.ptr, 256);
     const auto windowTitle = titleBuffer[0..titleLen].toUTF8;
-    debugWriteln("Changed to window with title '", windowTitle, "'");
+    debugWritelnPrivate("Changed foreground window", "Changed to window with title '", windowTitle, "'");
     try {
         bool windowInBlacklist;
 
@@ -786,6 +795,7 @@ void initialize() {
         configEnableMod4Lock = configJson["enableMod4Lock"].boolean;
         configFilterNeoModifiers = configJson["filterNeoModifiers"].boolean;
         configWarnUnprotectedInstallation = configJson["warnUnprotectedInstallation"].boolean;
+        configDebugLogRetentionDays = cast(int) configJson["debugLogRetentionDays"].integer;
 
         // Parse hotkeys (might be null -> user doesn't want to use hotkey)
         if (configJson["hotkeys"]["toggleActivation"].type == JSONType.STRING) {
@@ -880,6 +890,21 @@ version (unittest) {
     extern (C) __gshared string[] rt_options = ["testmode=test-only"];
 }
 
+void setUpLogFile() {
+    // Log files of the debug build are kept in a fixed place and deleted after the retention period.
+    // This also runs in normal builds, so that switching back from the debug build cleans up old logs.
+    string logDir = buildPath(environment.get("LOCALAPPDATA", executableDir), "ReNeo", "logs");
+
+    version (FileLogging) {
+        auto answer = MessageBox(null, appStringwz(AppString.LOG_CONSENT, logDir, configDebugLogRetentionDays),
+            appStringwz(AppString.LOG_CONSENT_TITLE), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+        startFileLogging(answer == IDYES, logDir, configDebugLogRetentionDays);
+        updateTrayTooltip();
+    } else {
+        deleteOldLogFiles(logDir, configDebugLogRetentionDays, Clock.currTime());
+    }
+}
+
 void main(string[] args) {
     // Without a console (release build) uncaught errors would make ReNeo disappear silently
     try {
@@ -904,12 +929,11 @@ void run() {
     }
 
     debugWriteln("Starting ReNeo...");
-    version(FileLogging) {
-        debugWriteln("WARNING: File logging enabled, make sure you know what you're doing!");
-    }
     executableDir = dirName(thisExePath());
 
     initialize();
+
+    setUpLogFile();
 
     if (configWarnUnprotectedInstallation) {
         string unprotectedPath = findUnprotectedProgramFile(executableDir);

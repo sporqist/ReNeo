@@ -418,3 +418,135 @@ unittest {
         assert(text.canFind(`C:\Program Files\ReNeo`) && text.canFind(`%APPDATA%\ReNeo`), text);
     }
 }
+
+
+// ---- Debug log ----
+
+unittest {
+    // Only keys that can't produce text are logged in detail
+    setUp("Neo", true);
+    assert(isNonTextKey(VKEY.VK_LSHIFT, Scancode(0x2A, false)));
+    assert(isNonTextKey(VKEY.VK_F5, Scancode(0x3F, false)));
+    assert(isNonTextKey(VKEY.VK_LEFT, Scancode(0x4B, true)));
+    assert(isNonTextKey(VKEY.VK_CAPITAL, Scancode(SC_LMOD3, false)));  // Mod3 in the Neo layout
+
+    assert(!isNonTextKey(VKEY.VK_KEY_A, Scancode(0x1E, false)));
+    assert(!isNonTextKey(VKEY.VK_KEY_5, Scancode(0x06, false)));
+    assert(!isNonTextKey(VKEY.VK_SPACE, Scancode(0x39, false)));
+    assert(!isNonTextKey(VKEY.VK_RETURN, Scancode(0x1C, false)));
+    assert(!isNonTextKey(VKEY.VK_BACK, Scancode(0x0E, false)));
+    assert(!isNonTextKey(VKEY.VK_NUMPAD1, Scancode(0x4F, false)));
+    assert(!isNonTextKey(VKEY.VK_OEM_PERIOD, Scancode(0x34, false)));
+    assert(!isNonTextKey(VKEY.VK_PACKET, Scancode(0x61, false)));  // Unicode packets carry the character as scancode
+}
+
+unittest {
+    // Retention: only old ReNeo log files are deleted
+    import logging : deleteOldLogFiles;
+    import std.file : tempDir, mkdirRecurse, rmdirRecurse, write, exists, setTimes;
+    import std.path : buildPath;
+    import std.datetime.systime : Clock;
+    import core.time : days, hours;
+
+    string dir = buildPath(tempDir, "reneo_retention_test");
+    mkdirRecurse(dir);
+    scope (exit) rmdirRecurse(dir);
+
+    auto now = Clock.currTime();
+    string oldLog = buildPath(dir, "reneo_log_2020-01-01_120000.txt");
+    string newLog = buildPath(dir, "reneo_log_2026-01-01_120000.txt");
+    string otherFile = buildPath(dir, "notes.txt");
+    foreach (file; [oldLog, newLog, otherFile]) {
+        write(file, "x");
+    }
+    setTimes(oldLog, now - 8.days, now - 8.days);
+    setTimes(newLog, now - 6.days, now - 6.days);
+    setTimes(otherFile, now - 30.days, now - 30.days);
+
+    deleteOldLogFiles(dir, 7, now);
+    assert(!exists(oldLog));
+    assert(exists(newLog));
+    assert(exists(otherFile));
+}
+
+unittest {
+    import localization : initLocalization, appString, AppString, Language;
+    import std.algorithm : canFind;
+
+    foreach (language; [Language.ENGLISH, Language.GERMAN]) {
+        initLocalization(language);
+        string text = appString(AppString.LOG_CONSENT, `C:\logs`, 7);
+        assert(text.canFind(`C:\logs`) && text.canFind("7"), text);
+    }
+}
+
+version (FileLogging) unittest {
+    // The log of the shipped debug build must not contain typed text. Type a "secret" in every way that
+    // produces log output (physical keys, standalone key combos and Unicode, compose) and check the log file.
+    import logging : startFileLogging, currentLogFilePath, flushLogFile, closeLogFile;
+    import std.file : tempDir, readText, rmdirRecurse, exists;
+    import std.path : buildPath;
+    import std.algorithm : canFind;
+    import std.format : format;
+
+    string logDir = buildPath(tempDir, "reneo_log_test");
+    if (exists(logDir)) {
+        rmdirRecurse(logDir);
+    }
+    startFileLogging(true, logDir, 7);
+    scope (exit) {
+        closeLogFile();
+        rmdirRecurse(logDir);
+    }
+
+    void hookKey(uint vk, uint scan, bool down, bool injected = false) {
+        KBDLLHOOKSTRUCT event;
+        event.vkCode = vk;
+        event.scanCode = scan;
+        event.flags = (down ? 0 : LLKHF_UP) | (injected ? LLKHF_INJECTED : 0);
+        keyboardHook(down ? WM_KEYDOWN : WM_KEYUP, event);
+    }
+
+    // Physical keys in standalone mode, including layer 3 characters that are sent as key combos or Unicode
+    setUp("Neo", true);
+    foreach (keysym; ["s", "e", "c", "r", "e", "t"]) {
+        uint scan = scancodeFor(keysym);
+        hookKey(MapVirtualKey(scan, MAPVK_VSC_TO_VK), scan, true);
+        hookKey(MapVirtualKey(scan, MAPVK_VSC_TO_VK), scan, false);
+    }
+    hookKey(VK_CAPITAL, SC_LMOD3, true);
+    hookKey(0x44, SC_A, true);  // Neo layer 3: {
+    hookKey(0x44, SC_A, false);
+    hookKey(VK_CAPITAL, SC_LMOD3, false);
+
+    // Our own injected Unicode packet, which carries the character in the scancode field
+    hookKey(VK_PACKET, 'q', true, true);
+
+    // Compose
+    setUp("Neo", false);
+    hookKey(VK_CAPITAL, SC_LMOD3, true);
+    hookKey(VK_TAB, SC_TAB, true);
+    hookKey(VK_TAB, SC_TAB, false);
+    hookKey(VK_CAPITAL, SC_LMOD3, false);
+    foreach (keysym; ["o", "c"]) {
+        uint scan = scancodeFor(keysym);
+        hookKey(0, scan, true);
+        hookKey(0, scan, false);
+    }
+    sentInputs = [];
+
+    flushLogFile();
+    string log = readText(currentLogFilePath());
+
+    assert(log.canFind("text key"), log);
+    assert(log.canFind("VK_CAPITAL") || log.canFind("VK_TAB") || log.canFind("(0x14)"), log);  // modifiers stay visible
+    assert(!log.canFind("VK_KEY_"), log);
+    assert(!log.canFind("VK_PACKET"), log);
+    assert(!log.canFind("{"), log);
+    assert(!log.canFind("©"), log);
+    assert(!log.canFind("Next: "), log);
+    foreach (keysym; ["s", "e", "c", "r", "t", "o"]) {
+        assert(!log.canFind(format("Scan 0x%04X", scancodeFor(keysym))), log);
+    }
+    assert(!log.canFind(format("Scan 0x%04X", 'q')), log);
+}

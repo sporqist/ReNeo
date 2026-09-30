@@ -424,7 +424,7 @@ ComposeResult compose(NeoKey nk) nothrow {
                 sequenceChar = nk.charCode;
             }
             if (sequenceChar) {
-                debugWriteln("Added char to compose abort sequence: ", [sequenceChar].toUTF8);
+                debugWritelnPrivate("Added char to compose abort sequence", "Added char to compose abort sequence: ", [sequenceChar].toUTF8);
                 currentSequence ~= sequenceChar;
             }
 
@@ -454,7 +454,7 @@ ComposeResult compose(NeoKey nk) nothrow {
                 } else {
                     currentNode = next;
                     try {
-                        debugWriteln("Next: ", currentNode.next.map!(n => format("0x%X", n.keysym)).join(", "));
+                        debugWritelnPrivate("Waiting for next compose key", "Next: ", currentNode.next.map!(n => format("0x%X", n.keysym)).join(", "));
                     } catch (Exception e) {
                         // Doesn't matter
                     }
