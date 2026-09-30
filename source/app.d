@@ -826,6 +826,11 @@ void writeUserConfig(JSONValue configJson) {
     }
 }
 
+version (unittest) {
+    // Never start the actual program (and its global keyboard hook) from a test build, even if there are no tests
+    extern (C) __gshared string[] rt_options = ["testmode=test-only"];
+}
+
 void main(string[] args) {
     // Without a console (release build) uncaught errors would make ReNeo disappear silently
     try {
