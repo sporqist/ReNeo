@@ -1,5 +1,7 @@
 # ReNeo – Die Neo-Tastaturlayouts für Windows
 
+> Dies ist eine veränderte Version von [ReNeo](https://github.com/Rojetto/ReNeo), die seit September 2026 unter [sporqist/ReNeo](https://github.com/sporqist/ReNeo) weiterentwickelt wird. Alle Änderungen sind in der Git-Historie dokumentiert. Wie das Original steht sie unter der GNU General Public License Version 3 (siehe `COPYING`).
+
 [**Click here for English**](README_EN.md)
 
 ReNeo implementiert das [Neo-Tastaturlayout](http://neo-layout.org/) und seine Verwandten für Windows. Dabei kann man sich für eine von zwei Varianten entscheiden:
@@ -85,6 +87,8 @@ ReNeo kann mit zwei Konfigurationsdateien angepasst werden.
 ```
 - `"autoNumlock"`: Soll Numlock automatisch angeschaltet werden? Wenn die Tastatur einen echten Nummernblock besitzt, sollte diese Option für beste Kompatibilität immer auf `true` gesetzt sein. Bei Laptops mit nativer Numpad-Ebene auf dem Hauptfeld kann dieses Verhalten aber mit `false` deaktiviert werden.
 - `"enableMod4Lock"`: Soll Mod4-Lock mit `LM4+RM4` aktiviert werden können? Kann abgestellt werden um unabsichtliches Aktivieren zu vermeiden.
+- `"warnUnprotectedInstallation"`: Warnen, wenn ReNeo mit Administratorrechten läuft, seine Dateien aber ohne Administratorrechte verändert werden können (siehe [Autostart](docs/autostart.md)).
+- `"debugLogRetentionDays"`: Nach wie vielen Tagen Protokolldateien der Debugversion (`reneo_debug.exe`) gelöscht werden.
 - `"filterNeoModifiers"`:
     - `true` (Standard): Die Tastenevents für M3 und M4 werden im Erweiterungsmodus von ReNeo weggefiltert, Anwendungen bekommen von diesen Tasten also nichts mit. Workaround für [diesen Bug](https://git.neo-layout.org/neo/neo-layout/issues/510).
     - `false`: Anwendungen sehen M3/M4. Notwendig, wenn man in den Anwendungen mit diesen Tasten Optionen verknüpfen will.
@@ -148,7 +152,7 @@ ReNeo ist in D geschrieben und nutzt `dub` für Projektkonfiguration und Kompila
 Es gibt drei wichtige Kompilationsvarianten:
 
 1. Debug mit `dub build`: Neben Debuggingsymbolen öffnet die generierte EXE eine Konsole um Informationen ausgeben zu können.
-2. Debug und Log mit `dub build --build=debug-log`: Wie debug, nur dass zusätzlich in `reneo_log.txt` alle Konsolenausgaben abgespeichert werden. Achtung: Hier können potentiell sensible Daten landen.
+2. Debug und Log mit `dub build --build=debug-log`: Diese Version liegt Releases als `reneo_debug.exe` bei. Nach Bestätigung in einem Dialog schreibt sie ein Protokoll nach `%LOCALAPPDATA%\ReNeo\logs`, das nach `debugLogRetentionDays` Tagen gelöscht wird. Das Protokoll soll gefahrlos in Fehlerberichten geteilt werden können: Tasten, die Text erzeugen, Zeichen, Compose-Eingaben und Fenstertitel werden durch Platzhalter ersetzt (`debugWritelnPrivate`). Sichtbar bleibt, wann und wie viele Tasten gedrückt wurden. `dub test --build=unittest-log` prüft, dass getippter Text nicht im Protokoll landet.
 3. Release mit `dub build --build=release`: Optimierungen sind aktiviert und es wird keine Konsole geöffnet.
 
 Unit-Tests laufen mit `dub test`. Statt Tastenevents an Windows zu senden, zeichnen Test-Builds sie auf, sodass die Tastaturlogik (Ebenen, Modifier, Compose) ohne Seiteneffekte getestet werden kann. Jeder Push wird per GitHub Action gebaut und getestet.
@@ -160,5 +164,9 @@ Cairo-DLL stammt von https://github.com/preshing/cairo-windows. Die zugehörigen
 ## Release
 Wenn ein Tag nach dem Schema `v*` im Repo ankommt, löst eine GitHub Action den Release aus. Auf Basis der `config.[layout].json` Dateien werden verschiedene vorkonfigurierte ZIP-Archive erstellt und ein Release-Draft angelegt. Der kann dann manuell bearbeitet und freigeschaltet werden.
 
-# Bibliotheken
-Nutzt [Cairo](https://www.cairographics.org/), lizensiert unter der GNU Lesser General Public License (LGPL) Version 2.1.
+# Lizenzen
+ReNeo steht unter der GNU General Public License Version 3 (siehe `COPYING`). Mitgelieferte Komponenten Dritter:
+
+- [Cairo](https://www.cairographics.org/) (`cairo.dll`), lizenziert unter der GNU Lesser General Public License (LGPL) Version 2.1
+- `keysymdef.h` aus dem X.Org-Projekt, Lizenzhinweis in der Datei
+- `compose/en_US.module` aus dem X.Org-Projekt, weitere Compose-Module vom Neo-Projekt; `compose/klingon*.module` von Dennis Heidsiek unter CC-BY-SA 3.0 DE (Lizenzhinweise jeweils in den Dateien)

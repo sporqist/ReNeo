@@ -1,5 +1,7 @@
 # ReNeo – The Neo keyboard layout family on Windows
 
+> This is a modified version of [ReNeo](https://github.com/Rojetto/ReNeo), developed further at [sporqist/ReNeo](https://github.com/sporqist/ReNeo) since September 2026. All changes are documented in the Git history. Like the original, it is licensed under the GNU General Public License version 3 (see `COPYING`).
+
 ReNeo implements the [Neo keyboard layout](http://neo-layout.org/) and its relatives on Windows. There are two main modes of operation:
 1. *standalone mode*: ReNeo replaces all key events of the native layout (likely QWERTZ or QWERTY) with the desired Neo layout. You only need to run the ReNeo executable on system startup.
 2. *extension mode*: First, install a native Neo driver like [kbdneo](https://neo-layout.org/Einrichtung/kbdneo/). ReNeo then supplements all functions that can't be implemented in the native driver (capslock, navigation keys on layer 4, compose, ...).
@@ -83,6 +85,8 @@ ReNeo can be configured with two files.
 ```
 - `"autoNumlock"`: Activate Numlock automatically? For optimal compatibility this should always be set to `true` if the keyboard has a real number pad. However, this may cause problems for laptops with a native number block located on the letter keys. In that case, disable this feature with `false`.
 - `"enableMod4Lock"`: Should Mod4-lock be enabled with `LM4+RM4`? Can be disabled to prevent activating the lock on accident.
+- `"warnUnprotectedInstallation"`: Warn if ReNeo runs with administrator rights, but its files can be changed without administrator rights (see [autostart](docs/autostart.md)).
+- `"debugLogRetentionDays"`: After how many days log files of the debug version (`reneo_debug.exe`) are deleted.
 - `"filterNeoModifiers"`:
     - `true` (false): Key events for M3 and M4 are filtered in extension mode so that other programs won't see these events. Workaround for [this Bug](https://git.neo-layout.org/neo/neo-layout/issues/510).
     - `false`: Programs see M3/M4 events. Necessary if functions need to be bound in these applications.
@@ -145,7 +149,7 @@ ReNeo is written in D and uses `dub` for project configuration and compilation. 
 There are three build settings:
 
 1. Debug with `dub build`: In addition to debugging symbols, the generated executable opens instantiates a console to output debugging imformation.
-2. Debug and log with `dub build --build=debug-log`: Similar to debug but console output is additionally written to `reneo_log.txt`. Caution: this log file may contain sensitive information!
+2. Debug and log with `dub build --build=debug-log`: This version is included in releases as `reneo_debug.exe`. After confirming a dialog, it writes a log to `%LOCALAPPDATA%\ReNeo\logs`, which is deleted after `debugLogRetentionDays` days. The log is meant to be safe to share in bug reports: keys that produce text, characters, compose input and window titles are replaced by placeholders (`debugWritelnPrivate`). It still shows when and how many keys were pressed. `dub test --build=unittest-log` checks that typed text doesn't end up in the log.
 3. Release with `dub build --build=release`: Optimizations are active and no console is instantiated.
 
 Run the unit tests with `dub test`. Instead of sending key events to Windows, test builds record them, so the keyboard logic (layers, modifiers, compose) can be tested without side effects. Every push is built and tested by a GitHub action.
@@ -157,5 +161,9 @@ Cairo DLL originates from https://github.com/preshing/cairo-windows. The D heade
 ## Release
 A tag of the form `v*` triggers a GitHub action to generate a release draft. Based on the different `config.[layout].json` files, several pre-configured ZIP archives are created.
 
-# Librarys
-Uses [Cairo](https://www.cairographics.org/) licensed under the GNU Lesser General Public License (LGPL) version 2.1.
+# Licenses
+ReNeo is licensed under the GNU General Public License version 3 (see `COPYING`). Included third party components:
+
+- [Cairo](https://www.cairographics.org/) (`cairo.dll`), licensed under the GNU Lesser General Public License (LGPL) version 2.1
+- `keysymdef.h` from the X.Org project, license notice in the file
+- `compose/en_US.module` from the X.Org project, other compose modules from the Neo project; `compose/klingon*.module` by Dennis Heidsiek under CC-BY-SA 3.0 DE (license notices in the files)
