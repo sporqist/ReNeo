@@ -36,3 +36,14 @@ jobs:
           path: |
             reneo.exe
             cairo.dll
+
+  # Rust port, see docs/plans/rust-port.md
+  rust:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run tests
+        run: cargo test --workspace --locked
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings

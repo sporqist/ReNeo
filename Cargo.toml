@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members  = ["crates/reneo-core", "crates/reneo-win"]
+
+[workspace.package]
+version    = "2.0.0-dev"
+edition    = "2021"
+license    = "GPL-3.0-only"
+repository = "https://github.com/sporqist/ReNeo"
+
+[workspace.dependencies]
+serde      = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+# A panic in the keyboard hook must not unwind across the Windows callback boundary
+panic         = "abort"

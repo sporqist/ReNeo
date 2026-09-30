@@ -1,0 +1,12 @@
+[package]
+name        = "reneo-core"
+description = "Platform independent core of ReNeo: keysyms, layouts, compose and the key handling engine"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[dependencies]
+# layouts.json and config.json
+serde      = { workspace = true }
+serde_json = { workspace = true }
