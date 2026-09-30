@@ -52,7 +52,10 @@ static this() {
 
 void debugWriteln(T...)(T args) nothrow {
     debug {
-        writeln(args);
+        // Keep the test output readable
+        version (unittest) {} else {
+            writeln(args);
+        }
     }
 
     version(FileLogging) {
@@ -136,26 +139,67 @@ uint parseKeysym(string keysymStr) {
     return KEYSYM_VOID;
 }
 
-void sendVK(uint vk, Scancode scan, bool down) nothrow {
-    // for some reason we must set the 'extended' flag for these keys, otherwise they won't work correctly in combination with Shift (?)
-    scan.extended |= vk == VK_INSERT || vk == VK_DELETE || vk == VK_HOME || vk == VK_END || vk == VK_PRIOR || vk == VK_NEXT || vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT || vk == VK_RIGHT || vk == VK_DIVIDE;
-    auto inputStruct = buildInputStruct(vk, scan, down);
+// All generated input goes through this function. Unittest builds record the events instead of sending them,
+// so that the key handling logic can be tested without affecting the system.
+version (unittest) {
+    INPUT[] sentInputs;
 
-    SendInput(1, &inputStruct, INPUT.sizeof);
+    void sendInputs(INPUT[] inputs) nothrow {
+        sentInputs ~= inputs;
+    }
+} else {
+    void sendInputs(INPUT[] inputs) nothrow @nogc {
+        if (inputs.length > 0) {
+            SendInput(cast(uint) inputs.length, inputs.ptr, INPUT.sizeof);
+        }
+    }
 }
 
-void sendUTF16(wchar unicodeChar, bool down) nothrow {
+bool isExtendedVK(uint vk) nothrow @nogc {
+    // for some reason we must set the 'extended' flag for these keys, otherwise they won't work correctly in combination with Shift (?)
+    return vk == VK_INSERT || vk == VK_DELETE || vk == VK_HOME || vk == VK_END || vk == VK_PRIOR || vk == VK_NEXT || vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT || vk == VK_RIGHT || vk == VK_DIVIDE;
+}
+
+void sendVK(uint vk, Scancode scan, bool down) nothrow {
+    scan.extended |= isExtendedVK(vk);
+    auto inputStruct = buildInputStruct(vk, scan, down);
+
+    sendInputs((&inputStruct)[0 .. 1]);
+}
+
+// Split a code point into UTF-16 code units. Returns the number of units (1 or 2).
+uint toUTF16Units(dchar c, ref wchar[2] units) nothrow @nogc {
+    if (c <= 0xFFFF) {
+        units[0] = cast(wchar) c;
+        return 1;
+    }
+
+    uint v = c - 0x10000;
+    units[0] = cast(wchar) (0xD800 + (v >> 10));
+    units[1] = cast(wchar) (0xDC00 + (v & 0x3FF));
+    return 2;
+}
+
+INPUT buildUnicodeInputStruct(wchar unit, bool down) nothrow @nogc {
     INPUT inputStruct;
     inputStruct.type = INPUT_KEYBOARD;
     inputStruct.ki.wVk = 0;
-    inputStruct.ki.wScan = unicodeChar;
-    if (down) {
-        inputStruct.ki.dwFlags = KEYEVENTF_UNICODE;
-    } else {
-        inputStruct.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+    inputStruct.ki.wScan = unit;
+    inputStruct.ki.dwFlags = down ? KEYEVENTF_UNICODE : KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+    return inputStruct;
+}
+
+void sendUnicodeChar(dchar unicodeChar, bool down) nothrow {
+    // Characters outside of the BMP are sent as a surrogate pair in a single SendInput call
+    wchar[2] units;
+    uint unitCount = toUTF16Units(unicodeChar, units);
+
+    INPUT[2] inputs;
+    foreach (i; 0 .. unitCount) {
+        inputs[i] = buildUnicodeInputStruct(units[i], down);
     }
 
-    SendInput(1, &inputStruct, INPUT.sizeof);
+    sendInputs(inputs[0 .. unitCount]);
 }
 
 const REAL_MODIFIERS = [Modifier.LSHIFT, Modifier.RSHIFT, Modifier.LCTRL, Modifier.RCTRL, Modifier.LALT, Modifier.RALT];
@@ -165,35 +209,41 @@ void sendVKWithModifiers(uint vk, Scancode scan, PartialModifierState newForcedM
     // Also store forced modifier state globally so that we know the "resulting modifier state"
     // and only need to send the minimal modifier difference for the next keypress.
 
+    // Up and down events are collected separately (in fixed buffers, so that we don't allocate in the hook),
+    // so that we can easily insert elements at the front and back of both lists.
+    // In the end we first send all up events, then all down events.
+    enum MAX_EVENTS = REAL_MODIFIERS.length + 1;
+    INPUT[MAX_EVENTS] upInputs;
+    size_t upCount;
+    INPUT[MAX_EVENTS] downInputs;
+    size_t downCount;
+
+    static void append(ref INPUT[MAX_EVENTS] buffer, ref size_t count, INPUT inputStruct) nothrow @nogc {
+        buffer[count++] = inputStruct;
+    }
+
+    static void prepend(ref INPUT[MAX_EVENTS] buffer, ref size_t count, INPUT inputStruct) nothrow @nogc {
+        for (size_t i = count; i > 0; i--) {
+            buffer[i] = buffer[i - 1];
+        }
+        buffer[0] = inputStruct;
+        count++;
+    }
+
     // Determine the "resulting" modifier states as they appear to applications before and after applying
     // this VKs forced modifiers
-    PartialModifierState oldResultingModStates;
-    PartialModifierState newResultingModStates;
-
     foreach (mod; REAL_MODIFIERS) {
         bool modState = isModifierHeld(mod);
 
         bool oldModState = modState;
-        if (mod in currentForcedModifiers) {
-            oldModState = currentForcedModifiers[mod];
+        if (auto forced = mod in currentForcedModifiers) {
+            oldModState = *forced;
         }
-        oldResultingModStates[mod] = oldModState;
 
         bool newModState = modState;
-        if (mod in newForcedModifiers) {
-            newModState = newForcedModifiers[mod];
+        if (auto forced = mod in newForcedModifiers) {
+            newModState = *forced;
         }
-        newResultingModStates[mod] = newModState;
-    }
-
-    // Up and down separately, so that we can easily insert elements at the front and back
-    // of both lists. In the end we first send all up events, then all down events.
-    INPUT[] upInputs;
-    INPUT[] downInputs;
-
-    foreach (mod; oldResultingModStates.byKey) {
-        bool oldModState = oldResultingModStates[mod];
-        bool newModState = newResultingModStates[mod];
 
         if (oldModState && !newModState) {
             // up event
@@ -201,9 +251,9 @@ void sendVKWithModifiers(uint vk, Scancode scan, PartialModifierState newForcedM
 
             if (mod == Modifier.RALT) {
                 // release RAlt first in case of LCtrl+RAlt combo
-                try { upInputs.insertInPlace(0, inputStruct); } catch (Exception e) {}
+                prepend(upInputs, upCount, inputStruct);
             } else {
-                upInputs ~= inputStruct;
+                append(upInputs, upCount, inputStruct);
             }
         } else if (!oldModState && newModState) {
             // down event
@@ -211,30 +261,31 @@ void sendVKWithModifiers(uint vk, Scancode scan, PartialModifierState newForcedM
 
             if (mod == Modifier.LCTRL) {
                 // press LCtrl first in case of LCtrl+RAlt combo
-                try { downInputs.insertInPlace(0, inputStruct); } catch (Exception e) {}
+                prepend(downInputs, downCount, inputStruct);
             } else {
-                downInputs ~= inputStruct;
+                append(downInputs, downCount, inputStruct);
             }
         }
     }
 
     currentForcedModifiers = newForcedModifiers;
 
-    // for some reason we must set the 'extended' flag for these keys, otherwise they won't work correctly in combination with Shift (?)
-    scan.extended |= vk == VK_INSERT || vk == VK_DELETE || vk == VK_HOME || vk == VK_END || vk == VK_PRIOR || vk == VK_NEXT || vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT || vk == VK_RIGHT || vk == VK_DIVIDE;
+    scan.extended |= isExtendedVK(vk);
     auto mainKeyStruct = buildInputStruct(vk, scan, down);
 
     if (down) {
-        downInputs ~= mainKeyStruct;
+        append(downInputs, downCount, mainKeyStruct);
     } else {
-        try { upInputs.insertInPlace(0, mainKeyStruct); } catch (Exception e) {}
+        prepend(upInputs, upCount, mainKeyStruct);
     }
 
-    upInputs ~= downInputs;
-    SendInput(cast(uint) upInputs.length, upInputs.ptr, INPUT.sizeof);
+    INPUT[2 * MAX_EVENTS] allInputs;
+    allInputs[0 .. upCount] = upInputs[0 .. upCount];
+    allInputs[upCount .. upCount + downCount] = downInputs[0 .. downCount];
+    sendInputs(allInputs[0 .. upCount + downCount]);
 }
 
-void sendUTF16OrKeyCombo(wchar unicodeChar, bool down) nothrow {
+void sendUTF16OrKeyCombo(dchar unicodeChar, bool down) nothrow {
     /// Send a native key combo if there is one in the current layout, otherwise send unicode directly
     debug {
         try {
@@ -243,7 +294,13 @@ void sendUTF16OrKeyCombo(wchar unicodeChar, bool down) nothrow {
         catch (Exception e) {}
     }
 
-    short result = VkKeyScanEx(unicodeChar, lastInputLocale);
+    if (unicodeChar > 0xFFFF) {
+        // Characters outside of the BMP can't be looked up in the native layout
+        sendUnicodeChar(unicodeChar, down);
+        return;
+    }
+
+    short result = VkKeyScanEx(cast(wchar) unicodeChar, lastInputLocale);
     ubyte low = cast(ubyte) result;
     ubyte high = cast(ubyte) (result >> 8);
 
@@ -258,7 +315,7 @@ void sendUTF16OrKeyCombo(wchar unicodeChar, bool down) nothrow {
     if (low == 0xFF || kana || mod5 || mod6) {
         // char does not exist in native layout or requires exotic modifiers
         debugWriteln("No standard key combination found, sending VK packet instead.");
-        sendUTF16(unicodeChar, down);
+        sendUnicodeChar(unicodeChar, down);
         return;
     }
 
@@ -294,15 +351,15 @@ void sendUTF16OrKeyCombo(wchar unicodeChar, bool down) nothrow {
         // into the queue, while anothèr call consumes the dead key.
         // See https://github.com/Lexikos/AutoHotkey_L/blob/master/source/hook.cpp#L2597
         ToUnicodeEx(vk, 0, kb.ptr, buf.ptr, 4, 0, lastInputLocale);
-        sendUTF16(unicodeChar, down);
+        sendUnicodeChar(unicodeChar, down);
         return;
     } else if (unicodeTranslationResult == 0) {
         debugWriteln("Key combination does not exist natively, sending VK packet instead.");
-        sendUTF16(unicodeChar, down);
+        sendUnicodeChar(unicodeChar, down);
         return;
     } else if (buf[0] != unicodeChar) {
         debugWriteln("Key combination does not produce desired character, sending VK packet instead.");
-        sendUTF16(unicodeChar, down);
+        sendUnicodeChar(unicodeChar, down);
         return;
     }
 
@@ -357,22 +414,15 @@ void sendString(wstring content) nothrow {
     INPUT[] inputs;
     inputs.length = content.length * 2;
 
-    for (uint i = 0; i < content.length; i++) {    
-        inputs[2*i].type = INPUT_KEYBOARD;
-        inputs[2*i].ki.wVk = 0;
-        inputs[2*i].ki.wScan = content[i];
-        inputs[2*i].ki.dwFlags = KEYEVENTF_UNICODE;
-        
-        inputs[2*i + 1].type = INPUT_KEYBOARD;
-        inputs[2*i + 1].ki.wVk = 0;
-        inputs[2*i + 1].ki.wScan = content[i];
-        inputs[2*i + 1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+    foreach (i, unit; content) {
+        inputs[2*i] = buildUnicodeInputStruct(unit, true);
+        inputs[2*i + 1] = buildUnicodeInputStruct(unit, false);
     }
 
-    SendInput(cast(uint) inputs.length, inputs.ptr, INPUT.sizeof);
+    sendInputs(inputs);
 }
 
-INPUT buildInputStruct(uint vk, Scancode scan, bool down) nothrow {
+INPUT buildInputStruct(uint vk, Scancode scan, bool down) nothrow @nogc {
     INPUT inputStruct;
     inputStruct.type = INPUT_KEYBOARD;
     inputStruct.ki.wVk = cast(ushort) vk;
@@ -421,7 +471,7 @@ void sendNeoKey(NeoKey nk, Scancode realScan, bool down) nothrow {
         if (standaloneModeActive) {
             sendUTF16OrKeyCombo(nk.charCode, down);
         } else {
-            sendUTF16(nk.charCode, down);
+            sendUnicodeChar(nk.charCode, down);
         }
     }
 }
@@ -457,7 +507,7 @@ void sendMouseClick(bool down) nothrow {
         dwFlags = dwFlags << 2;
     }
     inputStruct.mi.dwFlags = dwFlags;
-    SendInput(1, &inputStruct, INPUT.sizeof);
+    sendInputs((&inputStruct)[0 .. 1]);
 }
 
 bool getCapslockState() nothrow {
@@ -547,19 +597,53 @@ bool setActiveLayout(NeoLayout *newLayout) nothrow @nogc {
 }
 
 
-void resetHookStates() nothrow {
-    // Reset all stored states that might lead to unwanted locks
+void forgetHeldKeys() nothrow {
+    // Forget all keys and modifiers that we believe are currently held, as well as partial compose and
+    // one handed mode sequences. Lock states (Capslock, Mod4 lock) are kept.
     naturalHeldModifiers.clear();
     heldKeys.clear();
     currentForcedModifiers.clear();
+
+    mirrorKeyHeld = false;
+    eatMirrorKey = false;
+    primedOneHandedKeys = [];
+    expectFakeShiftDown = false;
+
+    previousPatchedLayer = 1;
+
+    resetCompose();
+}
+
+void releaseAllHeldKeys() nothrow {
+    // Called when key up events might have been lost, e.g. because the secure desktop (lock screen,
+    // Ctrl+Alt+Del) or an elevated window had focus, or because Windows removed our hook for a while.
+    // Otherwise modifiers stay "held" in our state until they are pressed again (#94).
+    debugWriteln("Releasing all held keys");
+
+    foreach (entry; heldKeys.byKeyValue()) {
+        sendNeoKey(entry.value, entry.key, false);
+    }
+
+    // Release native modifiers that programs might see as pressed because we sent or forced them
+    foreach (mod; REAL_MODIFIERS) {
+        auto forced = mod in currentForcedModifiers;
+        if (isModifierHeld(mod) || (forced && *forced)) {
+            sendVK(mod, SCANCODE_BY_MODIFIER[mod], false);
+        }
+    }
+
+    forgetHeldKeys();
+}
+
+void resetHookStates() nothrow {
+    // Reset all stored states that might lead to unwanted locks
+    forgetHeldKeys();
 
     capslock = false;
     mod4Lock = false;
 
     setCapslockState(false);
     setKanaState(false);
-
-    mirrorKeyHeld = false;
 }
 
 

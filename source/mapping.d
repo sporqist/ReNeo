@@ -7,6 +7,7 @@ import std.json;
 import std.algorithm;
 import std.array;
 import std.string;
+import std.format : format;
 
 import reneo;
 
@@ -254,7 +255,7 @@ struct NeoKey {
     NeoKeyType keytype;
     union {
         VKEY vkCode;
-        wchar charCode;
+        dchar charCode;
     }
     PartialModifierState modifiers;
     string label;
@@ -279,41 +280,70 @@ void initLayouts(JSONValue jsonLayoutArray) {
     foreach (JSONValue jsonLayout; jsonLayoutArray.array) {
         NeoLayout layout;
         layout.name = jsonLayout["name"].str.to!wstring;
-        if ("dllName" in jsonLayout) {
-            // if there is no dllName this is a pure standalone layout
-            layout.dllName = jsonLayout["dllName"].str.to!wstring;
-        }
 
-        // Parse modifier mappings
-        foreach (string scancodeString, JSONValue jsonModifierName; jsonLayout["modifiers"]) {
-            layout.modifiers[parseScancode(scancodeString)] = parseModifier(jsonModifierName.str);
-        }
-
-        // Parse layer definitions
-        foreach (jsonPartialModifierState; jsonLayout["layers"].array) {
-            PartialModifierState pms;
-
-            foreach (string modifierName, JSONValue modifierState; jsonPartialModifierState) {
-                pms[parseModifier(modifierName)] = modifierState.boolean;
-            }
-
-            layout.layers ~= pms;
-        }
-
-        foreach (string scancodeString, JSONValue jsonLayersArray; jsonLayout["map"]) {
-            MapEntry entry;
-            for (int i = 0; i < layout.layers.length; i++) {
-                entry.layers ~= parseNeoKey(jsonLayersArray.array[i]);
-            }
-            layout.map[parseScancode(scancodeString)] = entry;
-        }
-
-        foreach (JSONValue scancodeJson; jsonLayout["capslockableKeys"].array) {
-            auto scan = parseScancode(scancodeJson.str);
-            layout.map[scan].capslockable = true;
+        // Wrap all errors with the layout name, so that users can find mistakes in their custom layouts
+        try {
+            parseLayout(jsonLayout, layout);
+        } catch (Exception e) {
+            throw new Exception(format("Layout '%s': %s", layout.name, e.msg));
         }
 
         layouts ~= layout;
+    }
+}
+
+void parseLayout(JSONValue jsonLayout, ref NeoLayout layout) {
+    if ("dllName" in jsonLayout) {
+        // if there is no dllName this is a pure standalone layout
+        layout.dllName = jsonLayout["dllName"].str.to!wstring;
+    }
+
+    // Parse modifier mappings
+    foreach (string scancodeString, JSONValue jsonModifierName; jsonLayout["modifiers"]) {
+        layout.modifiers[parseScancode(scancodeString)] = parseModifier(jsonModifierName.str);
+    }
+
+    // Parse layer definitions
+    foreach (jsonPartialModifierState; jsonLayout["layers"].array) {
+        PartialModifierState pms;
+
+        foreach (string modifierName, JSONValue modifierState; jsonPartialModifierState) {
+            pms[parseModifier(modifierName)] = modifierState.boolean;
+        }
+
+        layout.layers ~= pms;
+    }
+
+    foreach (string scancodeString, JSONValue jsonLayersArray; jsonLayout["map"]) {
+        auto scan = parseScancode(scancodeString);
+        if (scan in layout.map) {
+            throw new Exception(format("Key %s is mapped more than once", scancodeString));
+        }
+
+        auto jsonKeys = jsonLayersArray.array;
+        if (jsonKeys.length < layout.layers.length) {
+            throw new Exception(format("Key %s has %d entries, but the layout defines %d layers",
+                scancodeString, jsonKeys.length, layout.layers.length));
+        }
+
+        MapEntry entry;
+        foreach (i, jsonKey; jsonKeys[0 .. layout.layers.length]) {
+            try {
+                entry.layers ~= parseNeoKey(jsonKey);
+            } catch (Exception e) {
+                throw new Exception(format("Key %s, layer %d: %s", scancodeString, i + 1, e.msg));
+            }
+        }
+        layout.map[scan] = entry;
+    }
+
+    foreach (JSONValue scancodeJson; jsonLayout["capslockableKeys"].array) {
+        auto scan = parseScancode(scancodeJson.str);
+        if (auto entry = scan in layout.map) {
+            entry.capslockable = true;
+        } else {
+            throw new Exception(format("Capslockable key %s is not mapped", scancodeJson.str));
+        }
     }
 }
 
@@ -338,7 +368,11 @@ NeoKey parseNeoKey(JSONValue jsonKey) {
         }
     } else if ("char" in jsonKey) {
         key.keytype = NeoKeyType.CHAR;
-        key.charCode = jsonKey["char"].str.to!wstring[0];
+        auto chars = jsonKey["char"].str.to!dstring;
+        if (chars.length != 1) {
+            throw new Exception(format("\"char\" must be exactly one character, got \"%s\"", jsonKey["char"].str));
+        }
+        key.charCode = chars[0];
     }
 
     if ("label" in jsonKey) {
@@ -353,6 +387,9 @@ NeoKey parseNeoKey(JSONValue jsonKey) {
 Scancode parseScancode(string scancodeString) {
     // scancode is a byte in hex, a + after the code means the extended bit is set
     bool extended = scancodeString.length == 3 && scancodeString[2] == '+';
+    if (!(scancodeString.length == 2 || extended)) {
+        throw new Exception(format("Invalid scancode '%s', expected two hex digits optionally followed by '+'", scancodeString));
+    }
     uint scan = scancodeString[0..2].to!uint(16);
     return Scancode(scan, extended);
 }

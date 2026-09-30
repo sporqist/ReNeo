@@ -1,4 +1,5 @@
 import core.sys.windows.windows;
+import core.sys.windows.wtsapi32 : WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION;
 import core.stdc.stdio;
 import core.stdc.string;
 import core.stdc.wchar_;
@@ -19,6 +20,7 @@ import std.path;
 import std.stdio;
 import std.json;
 import std.regex : matchFirst;
+import std.process : environment;
 
 HHOOK hHook;
 HWINEVENTHOOK foregroundHook;
@@ -116,8 +118,18 @@ const UINT ID_HOTKEY_ONE_HANDED_MODE = 0x003;
 
 const UINT LAYOUTMENU_POSITION = 0;
 
+const UINT_PTR ID_TIMER_HOOK_WATCHDOG = 0x001;
+// Windows silently removes low level hooks whose callback takes longer than LowLevelHooksTimeout
+// (e.g. under heavy load or while games start), and there is no way to detect this (#108, #115).
+// So we periodically re-register the hook, like WinCompose does.
+const UINT HOOK_WATCHDOG_INTERVAL_MS = 5000;
+
+const UINT PBT_APMRESUMEAUTOMATIC = 0x0012;
+
 const APPNAME            = "ReNeo"w;
 string executableDir;
+// Directory of the user's config.json, see determineConfigDir
+string configDir;
 
 TrayIcon trayIcon;
 
@@ -132,7 +144,25 @@ struct BlacklistEntry {
 
 extern (Windows)
 LRESULT LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) nothrow {
-    if (foregroundWindowChanged) {
+    /*
+    If nCode is less than zero, the hook procedure must return the value returned by CallNextHookEx.
+
+    If nCode is greater than or equal to zero, and the hook procedure did not process the message,
+    it is highly recommended that you call CallNextHookEx and return the value it returns;
+    otherwise, other applications that have installed WH_KEYBOARD_LL hooks will not receive hook
+    notifications and may behave incorrectly as a result. If the hook procedure processed the message,
+    it may return a nonzero value to prevent the system from passing the message to the rest of the
+    hook chain or the target window procedure.
+    */
+    if (nCode < 0) {
+        return CallNextHookEx(hHook, nCode, wParam, lParam);
+    }
+
+    // The native layout can change without a foreground window change (e.g. Win+Space or Alt+Shift, #111),
+    // so we compare the input locale on every key down. This is cheap, the expensive lookup in
+    // checkKeyboardLayout only happens when something changed.
+    bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
+    if (foregroundWindowChanged || keyDown && foregroundInputLocaleChanged()) {
         checkKeyboardLayout();
         foregroundWindowChanged = false;
     }
@@ -146,21 +176,6 @@ LRESULT LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) nothrow {
 
     bool eat = keyboardHook(wParam, msgStruct);
 
-    /*
-    If nCode is less than zero, the hook procedure must return the value returned by CallNextHookEx.
-
-    If nCode is greater than or equal to zero, and the hook procedure did not process the message,
-    it is highly recommended that you call CallNextHookEx and return the value it returns;
-    otherwise, other applications that have installed WH_KEYBOARD_LL hooks will not receive hook
-    notifications and may behave incorrectly as a result. If the hook procedure processed the message,
-    it may return a nonzero value to prevent the system from passing the message to the rest of the
-    hook chain or the target window procedure.
-    */
-
-    if (nCode < 0) {
-        return CallNextHookEx(hHook, nCode, wParam, lParam);
-    }
-
     if (eat) {
         return -1;
     }
@@ -168,7 +183,41 @@ LRESULT LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) nothrow {
     return CallNextHookEx(hHook, nCode, wParam, lParam);
 }
 
+HKL getForegroundInputLocale() nothrow {
+    // The input locale belongs to the thread of the focused control. For UWP apps the foreground window
+    // belongs to ApplicationFrameHost, so we ask for the focused window of the foreground thread.
+    // May return null, e.g. for console windows!
+    DWORD threadId = GetWindowThreadProcessId(GetForegroundWindow(), NULL);
+    GUITHREADINFO guiThreadInfo;
+    guiThreadInfo.cbSize = GUITHREADINFO.sizeof;
+    if (GetGUIThreadInfo(threadId, &guiThreadInfo) && guiThreadInfo.hwndFocus) {
+        threadId = GetWindowThreadProcessId(guiThreadInfo.hwndFocus, NULL);
+    }
+    return GetKeyboardLayout(threadId);
+}
+
+bool foregroundInputLocaleChanged() nothrow {
+    HKL inputLocale = getForegroundInputLocale();
+    // null means "unknown" (console windows), which never counts as a change
+    return inputLocale && inputLocale != lastInputLocale;
+}
+
+// Registry lookups are too slow to repeat inside the keyboard hook, so the DLL name is cached per input locale
+wstring[HKL] dllNameCache;
+
 wstring inputLocaleToDllName(HKL inputLocale) nothrow {
+    if (auto cached = inputLocale in dllNameCache) {
+        return *cached;
+    }
+
+    wstring dllName = lookupInputLocaleDllName(inputLocale);
+    try {
+        dllNameCache[inputLocale] = dllName;
+    } catch (Exception e) {}
+    return dllName;
+}
+
+wstring lookupInputLocaleDllName(HKL inputLocale) nothrow {
     // Getting the layout name (which we can then look up in the registry) is a little tricky
     // https://stackoverflow.com/a/19321020/1610421
 
@@ -178,7 +227,7 @@ wstring inputLocaleToDllName(HKL inputLocale) nothrow {
     GetKeyboardLayoutNameW(layoutName.ptr);
 
     wchar[256] regKey;
-    wcscpy(regKey.ptr, r"SYSTEM\ControlSet001\Control\Keyboard Layouts\"w.ptr);
+    wcscpy(regKey.ptr, r"SYSTEM\CurrentControlSet\Control\Keyboard Layouts\"w.ptr);
     wcscat(regKey.ptr, layoutName.ptr);
 
     wstring valueName = "Layout File"w;
@@ -206,7 +255,7 @@ void checkKeyboardLayout() nothrow {
 
     debugWriteln("Updating keyboard layout");
     // inputLocale may be null, e.g. in console windows!
-    HKL inputLocale = GetKeyboardLayout(GetWindowThreadProcessId(GetForegroundWindow(), NULL));
+    HKL inputLocale = getForegroundInputLocale();
     debugWriteln("Found input locale ", inputLocale);
     wstring dllName;
     if (inputLocale) {  // only look up the inputLocale if it's not null, otherwise dllName is empty
@@ -287,6 +336,8 @@ LRESULT WndProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam) nothrow {
         break;
         case WM_DESTROY:
         // Hide the tray icon and cleanup before closing the application
+        KillTimer(hwnd, ID_TIMER_HOOK_WATCHDOG);
+        WTSUnRegisterSessionNotification(hwnd);
         trayIcon.hide();
         DestroyMenu(contextMenu);
         // Not necessary to unload icons loaded from file
@@ -331,6 +382,8 @@ LRESULT WndProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam) nothrow {
             case ID_TRAY_RELOAD_CONTEXTMENU:
             debugWriteln("Re-initialize...");
             initialize();
+            dllNameCache.clear();
+            recoverFromLostInput();
             updateOSK();
             break;
 
@@ -346,12 +399,33 @@ LRESULT WndProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam) nothrow {
                 checkKeyboardLayout();
                 CheckMenuRadioItem(layoutMenu, 0, GetMenuItemCount(layoutMenu) - 1, newLayoutIdx, MF_BYPOSITION);
                 // Persist new selected layout
-                auto configJson = parseJSONFile("config.json");
+                auto configJson = parseJSONFile(buildPath(configDir, "config.json"));
                 configJson["standaloneLayout"] = layouts[newLayoutIdx].name;
-                std.file.write(buildPath(executableDir, "config.json"), toJSON(configJson, true));
+                writeUserConfig(configJson);
                 updateOSK();
             }
             break;
+        }
+        break;
+
+        case WM_TIMER:
+        if (wParam == ID_TIMER_HOOK_WATCHDOG) {
+            reinstallKeyboardHook();
+        }
+        break;
+
+        case WM_WTSSESSION_CHANGE:
+        // After unlocking or reconnecting, key up events that happened on the secure desktop are lost (#94, #97)
+        if (wParam == WTS_SESSION_UNLOCK || wParam == WTS_SESSION_LOGON || wParam == WTS_CONSOLE_CONNECT || wParam == WTS_REMOTE_CONNECT) {
+            debugWriteln("Session unlocked or reconnected");
+            recoverFromLostInput();
+        }
+        break;
+
+        case WM_POWERBROADCAST:
+        if (wParam == PBT_APMRESUMEAUTOMATIC) {
+            debugWriteln("Resumed from sleep");
+            recoverFromLostInput();
         }
         break;
 
@@ -457,11 +531,13 @@ void updateContextMenu() {
 }
 
 void updateTrayTooltip() nothrow {
-    wstring layoutName = "inaktiv"w;
-    if (resultingHookState && activeLayout) {
-        layoutName = (standaloneModeActive ? ""w : "+"w) ~ activeLayout.name;
-    }
-    trayIcon.setTip((APPNAME ~ " (" ~ layoutName ~ ")").to!(wchar[]));
+    try {
+        wstring layoutName = appString(AppString.TRAY_INACTIVE).to!wstring;
+        if (resultingHookState && activeLayout) {
+            layoutName = (standaloneModeActive ? ""w : "+"w) ~ activeLayout.name;
+        }
+        trayIcon.setTip((APPNAME ~ " (" ~ layoutName ~ ")").to!(wchar[]));
+    } catch (Exception e) {}
 }
 
 void onHookStateUpdate() nothrow {
@@ -498,18 +574,48 @@ void toggleKeyboardHook() {
     keyboardHookActive = !keyboardHookActive;
 
     if (keyboardHookActive) {  // on activation
-        HINSTANCE hInstance = GetModuleHandle(NULL);
-        hHook = SetWindowsHookEx(WH_KEYBOARD_LL, &LowLevelKeyboardProc, hInstance, 0);
+        hHook = SetWindowsHookEx(WH_KEYBOARD_LL, &LowLevelKeyboardProc, GetModuleHandle(NULL), 0);
         debugWriteln("Keyboard hook registered!");
+        SetTimer(hwnd, ID_TIMER_HOOK_WATCHDOG, HOOK_WATCHDOG_INTERVAL_MS, NULL);
 
         checkKeyboardLayout();
     } else {  // on deactivation
+        KillTimer(hwnd, ID_TIMER_HOOK_WATCHDOG);
         UnhookWindowsHookEx(hHook);
-        // Only reset Numlock state if we were active before
+        hHook = null;
         debugWriteln("Keyboard hook unregistered!");
     }
 
     updateContextMenu();
+}
+
+void reinstallKeyboardHook() nothrow {
+    if (!keyboardHookActive) {
+        return;
+    }
+
+    // Install the new hook before removing the old one, so that no key events slip through. Hook callbacks
+    // are only dispatched while this thread pumps messages, so no event can be handled by both hooks.
+    HHOOK newHook = SetWindowsHookEx(WH_KEYBOARD_LL, &LowLevelKeyboardProc, GetModuleHandle(NULL), 0);
+    if (newHook) {
+        UnhookWindowsHookEx(hHook);
+        hHook = newHook;
+    } else {
+        debugWriteln("Could not re-register keyboard hook!");
+    }
+}
+
+void recoverFromLostInput() nothrow {
+    // Key events might have been lost (secure desktop, sleep, removed hook). Make sure the hook is
+    // registered, release everything we believe to be held and look at the current layout again.
+    reinstallKeyboardHook();
+    if (resultingHookState) {
+        releaseAllHeldKeys();
+    } else {
+        forgetHeldKeys();
+    }
+    foregroundWindowChanged = true;  // re-check the keyboard layout on the next key event
+    updateOSKAsync();
 }
 
 
@@ -570,10 +676,12 @@ void initialize() {
         initCompose(executableDir);
 
         // Load default config (shipped with the program) as a base
-        auto configJson = parseJSONFile("config.default.json");
+        auto configJson = parseJSONFile(buildPath(executableDir, "config.default.json"));
         // Load user config if it exists
-        if (exists(buildPath(executableDir, "config.json"))) {
-            auto userConfigJson = parseJSONFile("config.json");
+        configDir = determineConfigDir();
+        debugWriteln("Using config directory ", configDir);
+        if (exists(buildPath(configDir, "config.json"))) {
+            auto userConfigJson = parseJSONFile(buildPath(configDir, "config.json"));
 
             // Overwrite values from default config with user config settings
             void copyJsonObjectOverOther(ref JSONValue source, ref JSONValue destination) {
@@ -592,13 +700,13 @@ void initialize() {
         }
 
         // Write combined config (default values + user settings) to user config file
-        std.file.write(buildPath(executableDir, "config.json"), toJSON(configJson, true));
+        writeUserConfig(configJson);
 
         // First of all, set the langage so that subsequent stuff is localized correctly
         initLocalization(configJson["language"].str.toUpper.to!Language);
 
 
-        auto layoutsJson = parseJSONFile("layouts.json");
+        auto layoutsJson = parseJSONFile(buildPath(executableDir, "layouts.json"));
         initLayouts(layoutsJson["layouts"]);
 
         initOsk(configJson["osk"]);
@@ -658,7 +766,9 @@ void initialize() {
             blacklistEntry.windowTitleRegex = blacklistEntryJson["windowTitle"].str;
             configBlacklist ~= blacklistEntry;
         }
-    } catch (Exception e) {
+    } catch (Throwable e) {
+        // Also catch Errors (e.g. RangeError from an invalid custom layout), otherwise the program would just
+        // disappear without any message (#114)
         MessageBox(hwnd, appStringwz(AppString.ERROR_ERROR_OCCURRED_WHILE_STARTING, e.msg), appStringwz(AppString.ERROR_WHILE_INITIALIZING), MB_OK | MB_ICONERROR);
         exit(0);
     }
@@ -666,19 +776,69 @@ void initialize() {
     debugWriteln("Initialization complete!");
 }
 
-JSONValue parseJSONFile(string jsonFilename) {
-    string jsonFilePath = buildPath(executableDir, jsonFilename);
+JSONValue parseJSONFile(string jsonFilePath) {
     if (!exists(jsonFilePath))
         throw new Exception(appString(AppString.ERROR_PATH_DOES_NOT_EXIST, jsonFilePath));
     string jsonString = readText(jsonFilePath);
     try {
         return parseJSON(jsonString);
     } catch (Exception e) {
-        throw new Exception(appString(AppString.ERROR_WHILE_PARSING, jsonFilename, e.msg));
+        throw new Exception(appString(AppString.ERROR_WHILE_PARSING, baseName(jsonFilePath), e.msg));
+    }
+}
+
+string determineConfigDir() {
+    // Portable installs keep config.json next to the executable. If that isn't possible (e.g. installed
+    // to Program Files without write access, #117), the config lives in %APPDATA%\ReNeo instead.
+    string appDataDir = buildPath(environment.get("APPDATA", executableDir), "ReNeo");
+
+    if (exists(buildPath(executableDir, "config.json"))) {
+        return executableDir;
+    }
+    if (exists(buildPath(appDataDir, "config.json"))) {
+        return appDataDir;
+    }
+    if (isDirWritable(executableDir)) {
+        return executableDir;
+    }
+
+    mkdirRecurse(appDataDir);
+    return appDataDir;
+}
+
+bool isDirWritable(string dir) {
+    string probeFile = buildPath(dir, ".reneo_write_test");
+    try {
+        std.file.write(probeFile, "");
+        std.file.remove(probeFile);
+        return true;
+    } catch (Exception e) {
+        return false;
+    }
+}
+
+void writeUserConfig(JSONValue configJson) {
+    // Failing to write the config is not fatal, settings just won't be persisted
+    try {
+        std.file.write(buildPath(configDir, "config.json"), toJSON(configJson, true));
+    } catch (Exception e) {
+        debugWriteln("Could not write config: ", e.msg);
     }
 }
 
 void main(string[] args) {
+    // Without a console (release build) uncaught errors would make ReNeo disappear silently
+    try {
+        run();
+    } catch (Throwable e) {
+        debugWriteln(e.toString());
+        try {
+            MessageBox(null, ("ReNeo:\n" ~ e.msg).toUTF16z, APPNAME.toUTF16z, MB_OK | MB_ICONERROR);
+        } catch (Throwable) {}
+    }
+}
+
+void run() {
     debug {
         const auto codePage = CP_UTF8;
         if (!SetConsoleCP(codePage))
@@ -727,6 +887,11 @@ void main(string[] args) {
     // Install icon in notification area, based on the hwnd
     trayIcon = new TrayIcon(hwnd, ID_MYTRAYICON, iconEnabled, APPNAME.to!(wchar[]));
     trayIcon.show();
+
+    // Get notified about session lock/unlock, so that we can recover from key events lost on the secure desktop
+    if (!WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION)) {
+        debugWriteln("Could not register for session notifications!");
+    }
 
     // Define context menu
     contextMenu = CreatePopupMenu();

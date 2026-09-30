@@ -20,6 +20,8 @@ enum AppString {
     MENU_OSK,
     MENU_ONE_HANDED_MODE,
 
+    TRAY_INACTIVE,
+
     ERROR_INVALID_HOTKEY_MODIFIER,
     ERROR_BLACKLIST_MUST_CONTAIN_WINDOW_TITLE,
     ERROR_ERROR_OCCURRED_WHILE_STARTING,
@@ -46,6 +48,7 @@ void initLocalization(Language lang) {
         AppString.MENU_QUIT: [Language.ENGLISH: "Quit", Language.GERMAN: "Beenden"],
         AppString.MENU_OSK: [Language.ENGLISH: "On-Screen Keyboard\t%s", Language.GERMAN: "Bildschirmtastatur\t%s"],
         AppString.MENU_ONE_HANDED_MODE: [Language.ENGLISH: "One-Handed Mode\t%s", Language.GERMAN: "Einhandmodus\t%s"],
+        AppString.TRAY_INACTIVE: [Language.ENGLISH: "inactive", Language.GERMAN: "inaktiv"],
         AppString.ERROR_INVALID_HOTKEY_MODIFIER: [
             Language.ENGLISH: "Non-existent hotkey modifier '%s'. Possible values are Shift, Ctrl, Alt, Win.",
             Language.GERMAN: "Nicht existierender Hotkey-Modifier '%s'. Mögliche Werte sind Shift, Ctrl, Alt, Win."
