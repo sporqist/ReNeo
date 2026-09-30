@@ -53,6 +53,8 @@ ReNeo kann mit zwei Konfigurationsdateien angepasst werden.
 
 ### Allgemeine Konfiguration
 
+`config.json` liegt normalerweise neben `reneo.exe`. Ist das Verzeichnis nicht beschreibbar (z. B. bei Installation unter `C:\Program Files`), wird stattdessen `%APPDATA%\ReNeo\config.json` verwendet.
+
 `config.json` hat folgende Optionen:
 
 - `"standaloneMode"`:
@@ -142,12 +144,14 @@ Es geht offenbar auch ReNeo im Standalone-Modus auf dem lokalen System mit QWERT
 
 # Für Entwickler
 ## Kompilieren
-ReNeo ist in D geschrieben und nutzt `dub` für Projektkonfiguration und Kompilation.
+ReNeo ist in D geschrieben und nutzt `dub` für Projektkonfiguration und Kompilation. Als Compiler wird [LDC](https://github.com/ldc-developers/ldc) verwendet (z. B. `scoop install ldc`), zum Linken wird Visual Studio bzw. das Windows SDK benötigt.
 Es gibt drei wichtige Kompilationsvarianten:
 
 1. Debug mit `dub build`: Neben Debuggingsymbolen öffnet die generierte EXE eine Konsole um Informationen ausgeben zu können.
 2. Debug und Log mit `dub build --build=debug-log`: Wie debug, nur dass zusätzlich in `reneo_log.txt` alle Konsolenausgaben abgespeichert werden. Achtung: Hier können potentiell sensible Daten landen.
 3. Release mit `dub build --build=release`: Optimierungen sind aktiviert und es wird keine Konsole geöffnet.
+
+Unit-Tests laufen mit `dub test`. Statt Tastenevents an Windows zu senden, zeichnen Test-Builds sie auf, sodass die Tastaturlogik (Ebenen, Modifier, Compose) ohne Seiteneffekte getestet werden kann. Jeder Push wird per GitHub Action gebaut und getestet.
 
 Die Ressourcendatei `res/reneo.res` wird mit `rc.exe` aus dem Windows SDK erstellt (x86-Version, die generierte res-Datei funktioniert sonst nicht). Dazu reicht der Befehl `rc.exe reneo.rc`.
 
