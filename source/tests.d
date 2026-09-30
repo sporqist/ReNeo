@@ -121,6 +121,12 @@ unittest {
 
     assertThrown(parseLine("# just a comment"));
     assertThrown(parseLine(""));
+
+    // Malformed lines must throw instead of hanging or reading past the end of the line
+    assertThrown(parseLine("<Multi_key"));
+    assertThrown(parseLine(`<Multi_key> <a> "x"`));
+    assertThrown(parseLine(`<Multi_key> <a> : "unterminated`));
+    assertThrown(parseLine(`<Multi_key> <a> : "ends with backslash\`));
 }
 
 unittest {

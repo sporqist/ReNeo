@@ -33,7 +33,7 @@
             "versions": ["FileLogging"]
         },
         "release": {
-            "buildOptions": ["releaseMode", "optimize", "inline"],
+            "buildOptions": ["optimize", "inline"],
             "lflags-windows-dmd": ["/SUBSYSTEM:windows", "/ENTRY:mainCRTStartup"],
             "lflags-windows-ldc": ["/SUBSYSTEM:windows", "/ENTRY:wmainCRTStartup"]
         }

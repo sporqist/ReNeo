@@ -55,6 +55,13 @@ class ComposeParser {
         return pos >= line.length;
     }
 
+    void expect(char c) {
+        // Don't use assert(match(c)) here: asserts are removed in release builds, and with them the match
+        if (!match(c)) {
+            throw new Exception("Expected '" ~ c ~ "' in compose line: " ~ line);
+        }
+    }
+
     void consumeWhitespace() {
         while (match(' ', '\t')) {}
     }
@@ -73,29 +80,31 @@ class ComposeParser {
 
     uint composeSequenceKey() {
         /// parse "<Multi_Key>" into a matching keysym
-        assert(match('<'));
+        expect('<');
         startChunk();
-        while (!check('>')) {
+        while (!atEnd() && !check('>')) {
             advance();
         }
         string keysymStr = endChunk();
-        match('>');
+        expect('>');
         return parseKeysym(keysymStr);
     }
 
     string quotedString() {
-        assert(match('"'));
-        
+        expect('"');
+
         string stringContent;
 
-        while (!check('"')) {
+        while (!atEnd() && !check('"')) {
             char next = peek();
 
             if (next == '\\') {
                 // For backslash escaped characters, skip the backslash and decide based on the next char
                 advance();
 
-                if (check('n')) {
+                if (atEnd()) {
+                    break;
+                } else if (check('n')) {
                     stringContent ~= '\n';
                 } else if (check('t')) {
                     stringContent ~= '\t';
@@ -109,7 +118,7 @@ class ComposeParser {
             advance();
         }
 
-        match('"');
+        expect('"');
         return stringContent;
     }
 
@@ -127,7 +136,7 @@ class ComposeParser {
             consumeWhitespace();
         }
 
-        assert(match(':'));
+        expect(':');
         consumeWhitespace();
         string resultString = quotedString();
         entry.result = resultString.to!wstring;
