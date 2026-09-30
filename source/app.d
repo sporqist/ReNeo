@@ -102,8 +102,6 @@ HWND hwnd;
 
 HMENU contextMenu;
 HMENU layoutMenu;
-HICON iconEnabled;
-HICON iconDisabled;
 
 // set in checkKeyboardLayout (if not null) and used when translating characters to native key combos
 HKL lastInputLocale;
@@ -423,7 +421,7 @@ LRESULT WndProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam) nothrow {
         switch (wParam) {
             case HookAction.toggleOsk: toggleOSK(); break;
             case HookAction.toggleOneHandedMode: toggleOneHandedMode(); break;
-            case HookAction.updateTray: updateTrayTooltip(); break;
+            case HookAction.updateTray: updateTrayIcon(); updateTrayTooltip(); break;
             default: break;
         }
         break;
@@ -683,35 +681,63 @@ int trayIconSize() nothrow {
     return GetSystemMetrics(SM_CXSMICON);
 }
 
+// Tray icon states (design option A). Resource names are defined in reneo.rc.
+enum TrayState {
+    active,
+    paused,
+    bypassed,
+    mod4Lock
+}
+
+const wstring[TrayState.max + 1] TRAY_ICON_RESOURCES = ["trayactive"w, "traypaused"w, "traybypassed"w, "traylock"w];
+HICON[TrayState.max + 1] trayIcons;
+
+TrayState currentTrayState() nothrow {
+    if (!keyboardHookActive) {
+        return TrayState.paused;
+    }
+    if (bypassBecauseWindowInBlacklist || bypassBecauseNoMatchingLayout || !activeLayout) {
+        return TrayState.bypassed;
+    }
+    return mod4Lock ? TrayState.mod4Lock : TrayState.active;
+}
+
+void updateTrayIcon() nothrow {
+    if (trayIcon && trayIcons[currentTrayState()]) {
+        trayIcon.setIcon(trayIcons[currentTrayState()]);
+    }
+}
+
 void loadTrayIcons() nothrow {
     int size = trayIconSize();
     HINSTANCE hInstance = GetModuleHandle(NULL);
-    // Names of icons are defined in reneo.rc
-    HICON newEnabled = LoadImage(hInstance, "trayenabled", IMAGE_ICON, size, size, 0);
-    HICON newDisabled = LoadImage(hInstance, "traydisabled", IMAGE_ICON, size, size, 0);
-    if (!newEnabled || !newDisabled) {
-        if (newEnabled) DestroyIcon(newEnabled);
-        if (newDisabled) DestroyIcon(newDisabled);
-        return;
+
+    HICON[TrayState.max + 1] newIcons;
+    foreach (i, name; TRAY_ICON_RESOURCES) {
+        newIcons[i] = LoadImage(hInstance, name.ptr, IMAGE_ICON, size, size, 0);
+        if (!newIcons[i]) {
+            debugWriteln("Could not load tray icon ", name);
+            foreach (icon; newIcons) {
+                if (icon) DestroyIcon(icon);
+            }
+            return;
+        }
     }
 
-    HICON oldEnabled = iconEnabled, oldDisabled = iconDisabled;
-    iconEnabled = newEnabled;
-    iconDisabled = newDisabled;
-    SetClassLongPtr(hwnd, GCLP_HICON, cast(LONG_PTR) iconEnabled);
-    if (trayIcon) {
-        trayIcon.setIcon(keyboardHookActive ? iconEnabled : iconDisabled);
+    HICON[TrayState.max + 1] oldIcons = trayIcons;
+    trayIcons = newIcons;
+    SetClassLongPtr(hwnd, GCLP_HICON, cast(LONG_PTR) trayIcons[TrayState.active]);
+    updateTrayIcon();
+    foreach (icon; oldIcons) {
+        if (icon) DestroyIcon(icon);
     }
-    if (oldEnabled) DestroyIcon(oldEnabled);
-    if (oldDisabled) DestroyIcon(oldDisabled);
 }
 
 void updateContextMenu() {
+    updateTrayIcon();
     if (!keyboardHookActive) {
-        trayIcon.setIcon(iconDisabled);
         modifyMenuItemString(contextMenu, ID_TRAY_ACTIVATE_CONTEXTMENU, appString(AppString.MENU_ENABLE, hotkeyToggleActivationStr));
     } else {
-        trayIcon.setIcon(iconEnabled);
         modifyMenuItemString(contextMenu, ID_TRAY_ACTIVATE_CONTEXTMENU, appString(AppString.MENU_DISABLE, hotkeyToggleActivationStr));
     }
 
@@ -1138,7 +1164,7 @@ void run() {
     loadTrayIcons();
 
     // Install icon in notification area, based on the hwnd
-    trayIcon = new TrayIcon(hwnd, ID_MYTRAYICON, iconEnabled, APPNAME.to!(wchar[]));
+    trayIcon = new TrayIcon(hwnd, ID_MYTRAYICON, trayIcons[TrayState.active], APPNAME.to!(wchar[]));
     trayIcon.show();
 
     // Get notified about session lock/unlock, so that we can recover from key events lost on the secure desktop
