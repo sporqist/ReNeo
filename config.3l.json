@@ -5,6 +5,7 @@
     "filterNeoModifiers": true,
     "autoNumlock": true,
     "enableMod4Lock": true,
+    "warnUnprotectedInstallation": true,
     "osk": {
         "numpad": false,
         "theme": "Grey",

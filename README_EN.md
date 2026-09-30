@@ -9,7 +9,7 @@ ReNeo implements the [Neo keyboard layout](http://neo-layout.org/) and its relat
 ## Installation
 
 1. *optional*: Install [kbdneo](https://neo-layout.org/Einrichtung/kbdneo/) normally
-2. Download [newest release](https://github.com/Rojetto/ReNeo/releases/latest) and unpack in a directory with write permissions, e.g. `C:\Users\[USER]\ReNeo`
+2. Download [newest release](https://github.com/Rojetto/ReNeo/releases/latest) and unpack it, e.g. to `C:\Users\[USER]\ReNeo`. **If ReNeo should run with administrator rights** (so that it also works in elevated programs), unpack it to `C:\Program Files\ReNeo` instead: if an elevated program lives in a folder you can change without administrator rights, any other program can replace its files and gain administrator rights. Settings are then stored in `%APPDATA%\ReNeo`.
 3. Start `reneo.exe` oder [add it to the autostart list](docs/autostart.md). Use the tray icon to deactivate or quit the program.
 4. *optional*: [Tweak `config.json`](#general-configuration) (generated on first start)
 

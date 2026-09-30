@@ -1,5 +1,5 @@
 import core.sys.windows.windows;
-import core.sys.windows.wtsapi32 : WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION;
+import core.sys.windows.wtsapi32 : NOTIFY_FOR_THIS_SESSION;
 import core.stdc.stdio;
 import core.stdc.string;
 import core.stdc.wchar_;
@@ -10,6 +10,7 @@ import mapping;
 import composer;
 import trayicon;
 import osk;
+import elevation : findUnprotectedProgramFile;
 import localization : initLocalization, appString, appStringwz, Language, AppString, hotkeyString;
 
 import std.utf;
@@ -19,7 +20,7 @@ import std.file;
 import std.path;
 import std.stdio;
 import std.json;
-import std.regex : matchFirst;
+import std.regex : Regex, regex, matchFirst;
 import std.process : environment;
 
 HHOOK hHook;
@@ -79,6 +80,7 @@ NeoLayout *configStandaloneLayout;
 bool configAutoNumlock;
 bool configEnableMod4Lock;
 bool configFilterNeoModifiers;
+bool configWarnUnprotectedInstallation;
 HotkeyConfig configHotkeyToggleActivation;
 HotkeyConfig configHotkeyToggleOSK;
 HotkeyConfig configHotkeyToggleOneHandedMode;
@@ -126,6 +128,30 @@ const UINT HOOK_WATCHDOG_INTERVAL_MS = 5000;
 
 const UINT PBT_APMRESUMEAUTOMATIC = 0x0012;
 
+// Protection against DLL planting (a malicious DLL next to reneo.exe, e.g. in a Downloads folder).
+// Static imports are resolved before main: apart from cairo.dll these are all KnownDLLs, which Windows always
+// loads from System32. Everything that is loaded later is only looked up in System32.
+extern (Windows) BOOL SetDefaultDllDirectories(DWORD directoryFlags) nothrow @nogc;
+const DWORD LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800;
+
+alias WTSRegisterSessionNotificationFn = extern (Windows) BOOL function(HWND, DWORD) nothrow @nogc;
+alias WTSUnRegisterSessionNotificationFn = extern (Windows) BOOL function(HWND) nothrow @nogc;
+// wtsapi32.dll is not a KnownDLL, so it is loaded explicitly from System32 instead of being linked
+WTSRegisterSessionNotificationFn wtsRegisterSessionNotification;
+WTSUnRegisterSessionNotificationFn wtsUnRegisterSessionNotification;
+
+void hardenDllLoading() {
+    if (!SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)) {
+        debugWriteln("Could not restrict DLL search path!");
+    }
+
+    HMODULE wtsapi = LoadLibraryExW("wtsapi32.dll"w.ptr, null, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (wtsapi) {
+        wtsRegisterSessionNotification = cast(WTSRegisterSessionNotificationFn) GetProcAddress(wtsapi, "WTSRegisterSessionNotification");
+        wtsUnRegisterSessionNotification = cast(WTSUnRegisterSessionNotificationFn) GetProcAddress(wtsapi, "WTSUnRegisterSessionNotification");
+    }
+}
+
 const APPNAME            = "ReNeo"w;
 string executableDir;
 // Directory of the user's config.json, see determineConfigDir
@@ -139,7 +165,9 @@ struct HotkeyConfig {
 }
 
 struct BlacklistEntry {
-    string windowTitleRegex;
+    // Compiled once when loading the config. Window titles are controlled by other programs, so keep
+    // blacklist patterns simple (avoid nested quantifiers like "(a+)+"), matching runs on the input thread.
+    Regex!char windowTitleRegex;
 }
 
 extern (Windows)
@@ -337,7 +365,9 @@ LRESULT WndProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam) nothrow {
         case WM_DESTROY:
         // Hide the tray icon and cleanup before closing the application
         KillTimer(hwnd, ID_TIMER_HOOK_WATCHDOG);
-        WTSUnRegisterSessionNotification(hwnd);
+        if (wtsUnRegisterSessionNotification) {
+            wtsUnRegisterSessionNotification(hwnd);
+        }
         trayIcon.hide();
         DestroyMenu(contextMenu);
         // Not necessary to unload icons loaded from file
@@ -353,60 +383,28 @@ LRESULT WndProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam) nothrow {
         switch(lParam) {
             case WM_LBUTTONDBLCLK:
             // Execute the same action as the context menu default item
-            auto menuItem = GetMenuDefaultItem(contextMenu, 0, 0);
-            SendMessage(hwnd, WM_COMMAND, menuItem, 0);
+            handleMenuCommand(GetMenuDefaultItem(contextMenu, 0, 0));
             break;
 
             case WM_CONTEXTMENU:
-            trayIcon.showContextMenu(hwnd, contextMenu);
+            handleMenuCommand(trayIcon.showContextMenu(hwnd, contextMenu));
             break;
 
             default: break;
         }
         break;
 
-        case WM_COMMAND:
-        switch (wParam) {
-            case ID_TRAY_ACTIVATE_CONTEXTMENU:
-            toggleKeyboardHook();
-            break;
+        // Menu commands are returned by TrackPopupMenuEx instead of being sent as WM_COMMAND, so other
+        // programs can't remote control ReNeo by posting WM_COMMAND to our window.
 
-            case ID_TRAY_OSK_CONTEXTMENU:
+        case WM_CLOSE:
+        // Only quit via the tray menu. Alt+F4 on the OSK (#103) or WM_CLOSE from other programs just hide the OSK.
+        if (quitRequested) {
+            DestroyWindow(hwnd);  // cleanup will be done in WM_DESTROY handler
+        } else if (oskOpen) {
             toggleOSK();
-            break;
-
-            case ID_TRAY_ONE_HANDED_MODE_CONTEXTMENU:
-            toggleOneHandedMode();
-            break;
-
-            case ID_TRAY_RELOAD_CONTEXTMENU:
-            debugWriteln("Re-initialize...");
-            initialize();
-            dllNameCache.clear();
-            recoverFromLostInput();
-            updateOSK();
-            break;
-
-            case ID_TRAY_QUIT_CONTEXTMENU:
-            PostMessage(hwnd, WM_CLOSE, 0, 0);  // cleanup will be done in WM_DESTROY handler
-            break;
-
-            default:
-            uint newLayoutIdx = cast(uint)wParam - ID_LAYOUTMENU;
-            // Did the user select a valid layout index?
-            if (newLayoutIdx >= 0 && newLayoutIdx < layouts.length) {
-                configStandaloneLayout = &layouts[newLayoutIdx];
-                checkKeyboardLayout();
-                CheckMenuRadioItem(layoutMenu, 0, GetMenuItemCount(layoutMenu) - 1, newLayoutIdx, MF_BYPOSITION);
-                // Persist new selected layout
-                auto configJson = parseJSONFile(buildPath(configDir, "config.json"));
-                configJson["standaloneLayout"] = layouts[newLayoutIdx].name;
-                writeUserConfig(configJson);
-                updateOSK();
-            }
-            break;
         }
-        break;
+        return 0;
 
         case WM_TIMER:
         if (wParam == ID_TIMER_HOOK_WATCHDOG) {
@@ -463,6 +461,56 @@ LRESULT WndProc(HWND hwnd, uint msg, WPARAM wParam, LPARAM lParam) nothrow {
     }
 
     return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+bool quitRequested;
+
+void handleMenuCommand(UINT command) {
+    switch (command) {
+        case 0:
+        // Menu was dismissed
+        break;
+
+        case ID_TRAY_ACTIVATE_CONTEXTMENU:
+        toggleKeyboardHook();
+        break;
+
+        case ID_TRAY_OSK_CONTEXTMENU:
+        toggleOSK();
+        break;
+
+        case ID_TRAY_ONE_HANDED_MODE_CONTEXTMENU:
+        toggleOneHandedMode();
+        break;
+
+        case ID_TRAY_RELOAD_CONTEXTMENU:
+        debugWriteln("Re-initialize...");
+        initialize();
+        dllNameCache.clear();
+        recoverFromLostInput();
+        updateOSK();
+        break;
+
+        case ID_TRAY_QUIT_CONTEXTMENU:
+        quitRequested = true;
+        PostMessage(hwnd, WM_CLOSE, 0, 0);
+        break;
+
+        default:
+        uint newLayoutIdx = command - ID_LAYOUTMENU;
+        // Did the user select a valid layout index?
+        if (command >= ID_LAYOUTMENU && newLayoutIdx < layouts.length) {
+            configStandaloneLayout = &layouts[newLayoutIdx];
+            checkKeyboardLayout();
+            CheckMenuRadioItem(layoutMenu, 0, GetMenuItemCount(layoutMenu) - 1, newLayoutIdx, MF_BYPOSITION);
+            // Persist new selected layout
+            auto configJson = parseJSONFile(buildPath(configDir, "config.json"));
+            configJson["standaloneLayout"] = layouts[newLayoutIdx].name;
+            writeUserConfig(configJson);
+            updateOSK();
+        }
+        break;
+    }
 }
 
 // Redraw OSK. WARNING: This function blocks and shouldn't be called from the key event handler
@@ -737,6 +785,7 @@ void initialize() {
         configAutoNumlock = configJson["autoNumlock"].boolean;
         configEnableMod4Lock = configJson["enableMod4Lock"].boolean;
         configFilterNeoModifiers = configJson["filterNeoModifiers"].boolean;
+        configWarnUnprotectedInstallation = configJson["warnUnprotectedInstallation"].boolean;
 
         // Parse hotkeys (might be null -> user doesn't want to use hotkey)
         if (configJson["hotkeys"]["toggleActivation"].type == JSONType.STRING) {
@@ -763,7 +812,7 @@ void initialize() {
             if (!("windowTitle" in blacklistEntryJson)) {
                 throw new Exception(appString(AppString.ERROR_BLACKLIST_MUST_CONTAIN_WINDOW_TITLE));
             }
-            blacklistEntry.windowTitleRegex = blacklistEntryJson["windowTitle"].str;
+            blacklistEntry.windowTitleRegex = regex(blacklistEntryJson["windowTitle"].str);
             configBlacklist ~= blacklistEntry;
         }
     } catch (Throwable e) {
@@ -844,6 +893,8 @@ void main(string[] args) {
 }
 
 void run() {
+    hardenDllLoading();
+
     debug {
         const auto codePage = CP_UTF8;
         if (!SetConsoleCP(codePage))
@@ -859,6 +910,14 @@ void run() {
     executableDir = dirName(thisExePath());
 
     initialize();
+
+    if (configWarnUnprotectedInstallation) {
+        string unprotectedPath = findUnprotectedProgramFile(executableDir);
+        if (unprotectedPath) {
+            MessageBox(null, appStringwz(AppString.WARNING_UNPROTECTED_INSTALLATION, unprotectedPath),
+                appStringwz(AppString.WARNING_SECURITY), MB_OK | MB_ICONWARNING);
+        }
+    }
 
     // We want to detect when the selected keyboard layout changes so that we can activate or deactivate ReNeo as necessary.
     // Listening to input locale events directly is difficult and not very robust. So we listen to the foreground window changes
@@ -894,7 +953,7 @@ void run() {
     trayIcon.show();
 
     // Get notified about session lock/unlock, so that we can recover from key events lost on the secure desktop
-    if (!WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION)) {
+    if (!wtsRegisterSessionNotification || !wtsRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION)) {
         debugWriteln("Could not register for session notifications!");
     }
 

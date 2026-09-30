@@ -10,7 +10,9 @@ Right click `reneo.exe` and select *Create shortcut*. Navigate to “C:\\Users\\
 
 ## Using Task Scheduler
 
-This method is a little more involved but it can run ReNeo with administrative privileges, meaning it'll also work in elevated applications. First, make sure there is no ReNeo shortcut in the startup directory.
+This method is a little more involved but it can run ReNeo with administrative privileges, meaning it'll also work in elevated applications. First, make sure there is no ReNeo shortcut in the startup directory, otherwise two instances run at the same time.
+
+**Important:** A program that runs with administrative privileges must be installed in a folder that only administrators can change, e.g. `C:\Program Files\ReNeo`. If ReNeo runs elevated from a folder like `C:\Users\[USER]\ReNeo`, any program you start could replace `reneo.exe` or one of its files, and would then run with administrative privileges at your next logon. ReNeo shows a warning at startup in this case. Your settings are stored in `%APPDATA%\ReNeo` when ReNeo can't write to its own folder.
 
 Use the start menu search to open the “Task Scheduler”. Create a new task called “ReNeo” with the following settings:
 

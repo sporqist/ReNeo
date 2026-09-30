@@ -22,6 +22,9 @@ enum AppString {
 
     TRAY_INACTIVE,
 
+    WARNING_SECURITY,
+    WARNING_UNPROTECTED_INSTALLATION,
+
     ERROR_INVALID_HOTKEY_MODIFIER,
     ERROR_BLACKLIST_MUST_CONTAIN_WINDOW_TITLE,
     ERROR_ERROR_OCCURRED_WHILE_STARTING,
@@ -49,6 +52,19 @@ void initLocalization(Language lang) {
         AppString.MENU_OSK: [Language.ENGLISH: "On-Screen Keyboard\t%s", Language.GERMAN: "Bildschirmtastatur\t%s"],
         AppString.MENU_ONE_HANDED_MODE: [Language.ENGLISH: "One-Handed Mode\t%s", Language.GERMAN: "Einhandmodus\t%s"],
         AppString.TRAY_INACTIVE: [Language.ENGLISH: "inactive", Language.GERMAN: "inaktiv"],
+        AppString.WARNING_SECURITY: [Language.ENGLISH: "ReNeo security warning", Language.GERMAN: "ReNeo-Sicherheitswarnung"],
+        AppString.WARNING_UNPROTECTED_INSTALLATION: [
+            Language.ENGLISH: "ReNeo runs with administrator rights, but its files can be changed without administrator rights:\n%s\n\n"
+                ~ "Any program you run could replace ReNeo's files or layouts and gain administrator rights at your next logon.\n\n"
+                ~ `Move ReNeo to a folder that only administrators can change, e.g. C:\Program Files\ReNeo. `
+                ~ `Your settings are then stored in %%APPDATA%%\ReNeo.` ~ "\n\n"
+                ~ "If you accept the risk, set \"warnUnprotectedInstallation\" to false in config.json.",
+            Language.GERMAN: "ReNeo läuft mit Administratorrechten, aber seine Dateien können ohne Administratorrechte verändert werden:\n%s\n\n"
+                ~ "Jedes Programm, das du startest, könnte ReNeos Dateien oder Layouts austauschen und bei der nächsten Anmeldung Administratorrechte erlangen.\n\n"
+                ~ `Verschiebe ReNeo in einen Ordner, den nur Administratoren ändern können, z. B. C:\Program Files\ReNeo. `
+                ~ `Deine Einstellungen liegen dann in %%APPDATA%%\ReNeo.` ~ "\n\n"
+                ~ "Wenn du das Risiko in Kauf nimmst, setze \"warnUnprotectedInstallation\" in config.json auf false."
+        ],
         AppString.ERROR_INVALID_HOTKEY_MODIFIER: [
             Language.ENGLISH: "Non-existent hotkey modifier '%s'. Possible values are Shift, Ctrl, Alt, Win.",
             Language.GERMAN: "Nicht existierender Hotkey-Modifier '%s'. Mögliche Werte sind Shift, Ctrl, Alt, Win."

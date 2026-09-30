@@ -405,3 +405,16 @@ unittest {
     sendUnicodeChar(0x1F574, false);
     assert(takeEvents() == [uni(0xD83D, false), uni(0xDD74, false)]);
 }
+
+unittest {
+    // appString returns "" if formatting fails, so make sure the security warning renders in both languages
+    import localization : initLocalization, appString, AppString, Language;
+    import std.algorithm : canFind;
+
+    foreach (language; [Language.ENGLISH, Language.GERMAN]) {
+        initLocalization(language);
+        string text = appString(AppString.WARNING_UNPROTECTED_INSTALLATION, `C:\Users\someone\ReNeo`);
+        assert(text.canFind(`C:\Users\someone\ReNeo`), text);
+        assert(text.canFind(`C:\Program Files\ReNeo`) && text.canFind(`%APPDATA%\ReNeo`), text);
+    }
+}

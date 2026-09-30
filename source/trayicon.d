@@ -78,12 +78,14 @@ class TrayIcon {
         }
     }
 
-    void showContextMenu(HWND hwndParent, HMENU menu) {
+    // Returns the ID of the selected menu item, or 0 if the menu was dismissed
+    UINT showContextMenu(HWND hwndParent, HMENU menu) {
         POINT curPoint;
         GetCursorPos(&curPoint);
 
         SetForegroundWindow(hwndParent);
         // Alignment for contextmenu left/bottom, which seems the most practical and common use
-        TrackPopupMenuEx(menu, TPM_LEFTBUTTON | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_BOTTOMALIGN, curPoint.x, curPoint.y, hwndParent, NULL);
+        return cast(UINT) TrackPopupMenuEx(menu, TPM_LEFTBUTTON | TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+            curPoint.x, curPoint.y, hwndParent, NULL);
     }
 }

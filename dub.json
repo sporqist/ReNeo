@@ -6,7 +6,7 @@
     "description": "Neo-Tastaturlayouts für Windows",
     "license": "GPL-3.0",
     "name": "reneo",
-    "libs": ["user32", "gdi32", "wtsapi32"],
+    "libs": ["user32", "gdi32"],
     "versions": ["Windows10"],
     "libs-windows-x86_64": ["lib/x86_64/cairo"],
     "copyFiles-windows-x86_64": ["lib/x86_64/*.dll"],
