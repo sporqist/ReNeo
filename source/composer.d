@@ -210,6 +210,9 @@ void initCompose(string exeDir) {
     }
     // reset existing compose tree
     composeRoot = ComposeNode();
+    removeComposeRoot = ComposeNode();
+    addedEntries = 0;
+    resetCompose();
     string composeDir = buildPath(exeDir, "compose");
 
     if (!exists(composeDir)) {
@@ -359,6 +362,14 @@ void loadRemoveModule(string fname) {
             // Do nothing, most likely because the line just was a comment
         }
     }
+}
+
+void resetCompose() nothrow {
+    // Abort any compose sequence in progress without output
+    active = false;
+    currentSpecialMode = null;
+    unicodeInput = "";
+    romanNumeralInput = "";
 }
 
 ComposeResult compose(NeoKey nk) nothrow {
