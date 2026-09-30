@@ -80,14 +80,16 @@ void initOsk(JSONValue oskJson) {
     configOskNumberRow = oskJson["numberRow"].boolean;
     configOskModifierNames = oskJson["modifierNames"].str.toUpper.to!OSKModifierNames;
 
-    // Load fonts
-    WIN_FONTS ~= CreateFont(0, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Segoe UI".toUTF16z);
-    WIN_FONTS ~= CreateFont(0, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Segoe UI Symbol".toUTF16z);
-    
-    foreach (HFONT winFont; WIN_FONTS) {
-        CAIRO_FONTS ~= cairo_win32_font_face_create_for_hfont(winFont);
+    // Load fonts (only once, initOsk is called again on reload)
+    if (WIN_FONTS.length == 0) {
+        WIN_FONTS ~= CreateFont(0, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Segoe UI".toUTF16z);
+        WIN_FONTS ~= CreateFont(0, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Segoe UI Symbol".toUTF16z);
+
+        foreach (HFONT winFont; WIN_FONTS) {
+            CAIRO_FONTS ~= cairo_win32_font_face_create_for_hfont(winFont);
+        }
     }
 
     // Define key types
@@ -212,29 +214,37 @@ void drawOsk(HWND hwnd, NeoLayout *layout, uint layer, bool capslock) {
     const float FONT_SIZE = 0.45;
     const float BASE_LINE = 0.7;
 
-    cairo_pattern_t *COLOR_GREY = cairo_pattern_create_rgba(0.4, 0.4, 0.4, 0.9);
+    // All patterns created for this frame, destroyed after drawing
+    cairo_pattern_t*[] framePatterns;
+    cairo_pattern_t *createPattern(double r, double g, double b, double a) {
+        auto pattern = cairo_pattern_create_rgba(r, g, b, a);
+        framePatterns ~= pattern;
+        return pattern;
+    }
 
-    cairo_pattern_t *COLOR_NEO_BLUE = cairo_pattern_create_rgba(0.024, 0.533, 0.612, 0.95);
+    cairo_pattern_t *COLOR_GREY = createPattern(0.4, 0.4, 0.4, 0.9);
 
-    cairo_pattern_t *COLOR_NEOVARS_GREY = cairo_pattern_create_rgba(200.0/255.0, 200.0/255.0, 200.0/255.0, 0.95);
-    cairo_pattern_t *COLOR_NEOVARS_YELLOW = cairo_pattern_create_rgba(235.0/255.0, 230.0/255.0, 150.0/255.0, 0.95);
-    cairo_pattern_t *COLOR_NEOVARS_RED = cairo_pattern_create_rgba(231.0/255.0, 150.0/255.0, 153.0/255.0, 0.95);
-    cairo_pattern_t *COLOR_NEOVARS_GREEN = cairo_pattern_create_rgba(117.0/255.0, 216.0/255.0, 157.0/255.0, 0.95);
-    cairo_pattern_t *COLOR_NEOVARS_BLUE = cairo_pattern_create_rgba(134.0/255.0, 138.0/255.0, 223.0/255.0, 0.95);
-    cairo_pattern_t *COLOR_NEOVARS_LIGHT_BLUE = cairo_pattern_create_rgba(197.0/255.0, 203.0/255.0, 255.0/255.0, 0.95);
+    cairo_pattern_t *COLOR_NEO_BLUE = createPattern(0.024, 0.533, 0.612, 0.95);
 
-    cairo_pattern_t *COLOR_GREEN_LIGHT_BLUE = cairo_pattern_create_rgba(147.0/255.0, 204.0/255.0, 234.0/255.0, 0.95);
-    cairo_pattern_t *COLOR_GREEN_GREENISH_BLUE = cairo_pattern_create_rgba(122.0/255.0, 190.0/255.0, 179.0/255.0, 0.95);
-    cairo_pattern_t *COLOR_GREEN_BLUEISH_GREEN = cairo_pattern_create_rgba(99.0/255.0, 178.0/255.0, 128.0/255.0, 0.95);
-    cairo_pattern_t *COLOR_GREEN_GREEN = cairo_pattern_create_rgba(74.0/255.0, 164.0/255.0, 74.0/255.0, 0.95);
-    cairo_pattern_t *COLOR_GREEN_LIGHT_GREEN = cairo_pattern_create_rgba(139.0/255.0, 189.0/255.0, 139.0/255.0, 0.95);
+    cairo_pattern_t *COLOR_NEOVARS_GREY = createPattern(200.0/255.0, 200.0/255.0, 200.0/255.0, 0.95);
+    cairo_pattern_t *COLOR_NEOVARS_YELLOW = createPattern(235.0/255.0, 230.0/255.0, 150.0/255.0, 0.95);
+    cairo_pattern_t *COLOR_NEOVARS_RED = createPattern(231.0/255.0, 150.0/255.0, 153.0/255.0, 0.95);
+    cairo_pattern_t *COLOR_NEOVARS_GREEN = createPattern(117.0/255.0, 216.0/255.0, 157.0/255.0, 0.95);
+    cairo_pattern_t *COLOR_NEOVARS_BLUE = createPattern(134.0/255.0, 138.0/255.0, 223.0/255.0, 0.95);
+    cairo_pattern_t *COLOR_NEOVARS_LIGHT_BLUE = createPattern(197.0/255.0, 203.0/255.0, 255.0/255.0, 0.95);
+
+    cairo_pattern_t *COLOR_GREEN_LIGHT_BLUE = createPattern(147.0/255.0, 204.0/255.0, 234.0/255.0, 0.95);
+    cairo_pattern_t *COLOR_GREEN_GREENISH_BLUE = createPattern(122.0/255.0, 190.0/255.0, 179.0/255.0, 0.95);
+    cairo_pattern_t *COLOR_GREEN_BLUEISH_GREEN = createPattern(99.0/255.0, 178.0/255.0, 128.0/255.0, 0.95);
+    cairo_pattern_t *COLOR_GREEN_GREEN = createPattern(74.0/255.0, 164.0/255.0, 74.0/255.0, 0.95);
+    cairo_pattern_t *COLOR_GREEN_LIGHT_GREEN = createPattern(139.0/255.0, 189.0/255.0, 139.0/255.0, 0.95);
 
     cairo_pattern_t *TEXT_COLOR;
 
     switch (configOskTheme) {
-        case OSKTheme.ColorClassic: TEXT_COLOR = cairo_pattern_create_rgba(0.05, 0.05, 0.05, 1.0); break;
-        case OSKTheme.ColorGreen: TEXT_COLOR = cairo_pattern_create_rgba(0.05, 0.05, 0.05, 1.0); break;
-        default: TEXT_COLOR = cairo_pattern_create_rgba(0.95, 0.95, 0.95, 1.0);
+        case OSKTheme.ColorClassic: TEXT_COLOR = createPattern(0.05, 0.05, 0.05, 1.0); break;
+        case OSKTheme.ColorGreen: TEXT_COLOR = createPattern(0.05, 0.05, 0.05, 1.0); break;
+        default: TEXT_COLOR = createPattern(0.95, 0.95, 0.95, 1.0);
     }
 
     cairo_set_font_size(cr, FONT_SIZE);
@@ -471,7 +481,10 @@ void drawOsk(HWND hwnd, NeoLayout *layout, uint layer, bool capslock) {
         drawKey(19, 3, 1, 2, Scancode(0x1C, true));
     }
 
-    // Cairo cleanup    
+    // Cairo cleanup
+    foreach (pattern; framePatterns) {
+        cairo_pattern_destroy(pattern);
+    }
     cairo_destroy(cr);
     cairo_surface_destroy(surface);
 
