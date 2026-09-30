@@ -9,10 +9,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Actions are pinned to commit hashes, tags can be moved
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up D compiler
-        uses: dlang-community/setup-dlang@v2
+        uses: dlang-community/setup-dlang@0a7469b93f791d83f30932c6fd105796c6966e20 # v2.0.0
         with:
           compiler: ldc-1.43.0
       - name: Install Pandoc
@@ -25,8 +26,16 @@ jobs:
         run: pandoc README_EN.md -f markdown -t html -s --metadata pagetitle="ReNeo README" --css docs/gh-pandoc.css -o README_EN.html
       - name: Replace version string in source code
         run: ((Get-Content -path source\app.d -Raw ) -replace '%VERSION%',$Env:GITHUB_REF.Substring(10)) | Set-Content -path source\app.d
+      - name: Build resource file from source
+        run: |
+          $rc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x86\rc.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          Push-Location res
+          & $rc.FullName /nologo /fo reneo.res reneo.rc
+          Pop-Location
       - name: Run unit tests
         run: dub test --compiler=ldc2
+      - name: Run unit tests with file logging
+        run: dub test --compiler=ldc2 --build=unittest-log
       - name: Compile debug version with Dub
         run: dub build --compiler=ldc2 --build=debug-log
       - name: Rename debug version
@@ -53,8 +62,10 @@ jobs:
         run: mv -Force config.3l.json ReNeo\config.default.json
       - name: Create 3l ZIP file
         run: 7z a -tzip ReNeo_3l.zip ReNeo\
+      - name: Create checksums
+        run: Get-FileHash ReNeo_*.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content -Encoding ascii SHA256SUMS.txt
       - name: Create Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           draft: true
           prerelease: false
@@ -63,4 +74,4 @@ jobs:
             ReNeo_NeoQwertz.zip
             ReNeo_Bone.zip
             ReNeo_3l.zip
-      
+            SHA256SUMS.txt
