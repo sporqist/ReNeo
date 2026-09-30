@@ -11,7 +11,7 @@ use crate::keysym::{Keysyms, KEYSYM_VOID};
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
 /// What a key does on one layer
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum KeyAction {
     /// Send a virtual key (navigation keys, special keys), optionally forcing native modifiers
     Vk { vk: u16, mods: ForcedModifiers },

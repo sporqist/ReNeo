@@ -22,8 +22,9 @@ two disagree and the plan doesn't say otherwise, the D behaviour wins.
 - **The hook path doesn't allocate, block or panic.** Windows silently removes low-level hooks that exceed
   `LowLevelHooksTimeout`. The engine works on pre-sized buffers; anything slow (OSK redraw, tray updates,
   config writes) is posted to the UI thread.
-- **Own input is tagged.** Every injected event carries a ReNeo marker in `dwExtraInfo`; the hook skips events
-  with that marker instead of all injected events.
+- **Injected input passes untouched.** Like the D version, the hook ignores all injected events: ReNeo's own, and
+  those of other programs (e.g. a password manager's auto-type), which must not be remapped. ReNeo's own events
+  additionally carry a marker in `dwExtraInfo`, so logs can tell them apart.
 - **Logs never contain typed text.** Same rule as the D version's `debugWritelnPrivate`, see the D
   `source/logging.d`. Tested like `dub test --build=unittest-log`.
 - **License: GPL-3.0**, like the D version. Every dependency must be GPL-3.0 compatible.
@@ -35,7 +36,7 @@ two disagree and the plan doesn't say otherwise, the D behaviour wins.
 | port/01 | Workspace, this plan, CI job | landed |
 | port/02 | Keysyms, layouts (loading and validation) | landed |
 | port/03 | Compose: parser, tree, special modes | landed |
-| port/04 | Engine: layers, modifiers, locks, Capslock, numpad fake shift, one-handed mode, forced modifiers | not started |
+| port/04 | Engine: layers, modifiers, locks, Capslock, numpad fake shift, one-handed mode, forced modifiers | landed |
 | port/05 | reneo-win: hook thread, injector, native layout tables, layout detection, watchdog, session recovery | not started |
 | port/06 | Config (incl. `%APPDATA%` fallback), redacted logging, elevation check, DLL hardening, localization | not started |
 | port/07 | Tray: icon A states, native menu, tooltip | not started |
